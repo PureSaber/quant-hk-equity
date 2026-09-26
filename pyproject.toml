@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-hk-equity"
+version = "0.1.0"
+description = "Auditable Hong Kong daily cash-equity research"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = ["pandas>=2,<3", "numpy>=1.26,<2.3", "pyarrow>=14", "exchange-calendars>=4.10,<5", "akshare>=1.12", "quant-data-kit", "quant-execution", "quant-factors", "quant-lab"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[project.scripts]
+quant-hk = "quant_hk_equity.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.quant-workspace]
+layer = "strategy"
+lock-files = ["requirements.lock", "stack.lock"]

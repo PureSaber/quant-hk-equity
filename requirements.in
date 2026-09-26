@@ -1,0 +1,21 @@
+# External dependencies only. Internal exact commits are installed from stack.lock
+# with --no-deps as an explicitly tested research overlay of the released stack.
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==25.0.1
+pyyaml==6.0.3
+akshare==1.18.97
+exchange-calendars==4.13.2
+jsonschema==4.26.0
+jsonschema-rs==0.52.1
+orjson==3.12.0
+duckdb==1.5.5
+typing-extensions>=4.4
+websockets==15.0.1
+pytest==8.4.2
+pytest-cov>=5
+coverage==7.16.0
+psutil>=6,<8
+ruff==0.16.5
+setuptools>=68
+rpds-py<0.31

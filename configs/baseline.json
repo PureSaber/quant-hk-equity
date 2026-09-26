@@ -1,0 +1,43 @@
+{
+  "schema": "quant-hk-study/v1",
+  "provider": "akshare_sina_hk",
+  "data_start": "2025-07-01",
+  "data_end": "2026-09-25",
+  "train_start": "2025-08-01",
+  "test_start": "2026-01-02",
+  "initial_cash": "1000000",
+  "rebalance_sessions": 5,
+  "top_n": 3,
+  "invested_fraction": "0.95",
+  "min_price": 2,
+  "min_median_turnover_hkd": 50000000,
+  "candidates": ["momentum_20d", "low_volatility_20d"],
+  "universe_scope": "current_watchlist_not_historical_universe",
+  "instrument_rules_scope": "constant_board_lot_scenario_not_pit",
+  "settlement_calendar_scope": "XHKG_sessions_proxy_not_verified_CCASS_calendar",
+  "master_source": "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx",
+  "master_checked_on": "2026-09-26",
+  "instruments": [
+    {"symbol": "00005", "name": "HSBC HOLDINGS", "lot_size": 400, "stamp_exempt": false},
+    {"symbol": "00700", "name": "TENCENT", "lot_size": 100, "stamp_exempt": false},
+    {"symbol": "00939", "name": "CCB", "lot_size": 1000, "stamp_exempt": false},
+    {"symbol": "00941", "name": "CHINA MOBILE", "lot_size": 500, "stamp_exempt": false},
+    {"symbol": "09988", "name": "BABA-W", "lot_size": 100, "stamp_exempt": false}
+  ],
+  "fees": {
+    "valid_from": "2025-06-30",
+    "valid_to": "2026-09-26",
+    "commission_rate": "0.0003",
+    "minimum_commission": "3",
+    "platform_fee": "0",
+    "stamp_rate": "0.001",
+    "sfc_rate": "0.000027",
+    "afrc_rate": "0.0000015",
+    "trading_rate": "0.0000565",
+    "settlement_rate": "0.000042",
+    "settlement_minimum": "0",
+    "settlement_maximum": null,
+    "slippage_rate": "0.0005",
+    "source": "HKEX transaction fees and HKSCC circular PT/SCS/CCASS/022/2025; commission/platform/slippage are explicit research assumptions"
+  }
+}
