@@ -1,0 +1,76 @@
+{
+  "status": "complete_exploratory",
+  "investable": false,
+  "training": {
+    "momentum_20d": {
+      "sessions": 104,
+      "total_return": 0.03837710999999988,
+      "annualized_return": 0.09554363463287929,
+      "sharpe_zero_rf": 0.5856238766341371,
+      "max_drawdown": -0.12521180887780736,
+      "ending_nav_hkd": 1038377.11,
+      "fees_and_slippage_hkd": 11042.89,
+      "filled_orders": 33,
+      "return_basis": "price_only_excludes_corporate_actions",
+      "investable": false
+    },
+    "low_volatility_20d": {
+      "sessions": 104,
+      "total_return": 0.02944694999999986,
+      "annualized_return": 0.07285342464922318,
+      "sharpe_zero_rf": 0.6759005306889383,
+      "max_drawdown": -0.061638137731477194,
+      "ending_nav_hkd": 1029446.95,
+      "fees_and_slippage_hkd": 9088.05,
+      "filled_orders": 32,
+      "return_basis": "price_only_excludes_corporate_actions",
+      "investable": false
+    }
+  },
+  "limitations": [
+    "历史价格收益，不含分红、供股、拆并股调整；不是股东总收益。",
+    "当前观察名单存在幸存者与选择偏差；整手数按当前资料作固定情景，非历史PIT主表。",
+    "缺少完整停牌、退市和公司行动历史；输入缺失会终止研究，不自动补价。",
+    "交收日暂用XHKG交易日代理，T+2收盘释放卖出款；未经CCASS交收日历认证。",
+    "日频开盘参考价加成本情景，不模拟竞价成交、盘口、报价档位和VCM。",
+    "日线按当日收盘后可得的研究假设使用；当前下载的数据不是历史发布快照。",
+    "先按训练期选择固定候选，再评价留出期；这是回顾性时间切分，不是前瞻预注册。"
+  ],
+  "selected": "low_volatility_20d",
+  "holdout": {
+    "sessions": 181,
+    "total_return": 0.12052751000000006,
+    "annualized_return": 0.17168065348294648,
+    "sharpe_zero_rf": 1.1737633953937434,
+    "max_drawdown": -0.07681274702483454,
+    "ending_nav_hkd": 1120527.51,
+    "fees_and_slippage_hkd": 8542.51,
+    "filled_orders": 43,
+    "return_basis": "price_only_excludes_corporate_actions",
+    "investable": false
+  },
+  "benchmark": {
+    "sessions": 181,
+    "total_return": -0.017573607999999963,
+    "annualized_return": -0.024382488139055192,
+    "sharpe_zero_rf": -0.04510635918344343,
+    "max_drawdown": -0.1589841904679551,
+    "ending_nav_hkd": 982426.392,
+    "fees_and_slippage_hkd": 3398.62,
+    "filled_orders": 45,
+    "return_basis": "price_only_excludes_corporate_actions",
+    "investable": false
+  },
+  "double_cost": {
+    "sessions": 181,
+    "total_return": 0.11416139999999997,
+    "annualized_return": 0.16242306060407907,
+    "sharpe_zero_rf": 1.117925697586071,
+    "max_drawdown": -0.07786344741822082,
+    "ending_nav_hkd": 1114161.4,
+    "fees_and_slippage_hkd": 17633.62,
+    "filled_orders": 48,
+    "return_basis": "price_only_excludes_corporate_actions",
+    "investable": false
+  }
+}

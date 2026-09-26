@@ -1,0 +1,136 @@
+{
+  "config": {
+    "schema": "quant-hk-study/v1",
+    "provider": "akshare_sina_hk",
+    "data_start": "2025-07-01",
+    "data_end": "2026-09-25",
+    "train_start": "2025-08-01",
+    "test_start": "2026-01-02",
+    "initial_cash": "1000000",
+    "rebalance_sessions": 5,
+    "top_n": 3,
+    "invested_fraction": "0.95",
+    "min_price": 2,
+    "min_median_turnover_hkd": 50000000,
+    "candidates": [
+      "momentum_20d",
+      "low_volatility_20d"
+    ],
+    "universe_scope": "current_watchlist_not_historical_universe",
+    "instrument_rules_scope": "constant_board_lot_scenario_not_pit",
+    "settlement_calendar_scope": "XHKG_sessions_proxy_not_verified_CCASS_calendar",
+    "master_source": "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx",
+    "master_checked_on": "2026-09-26",
+    "instruments": [
+      {
+        "symbol": "00005",
+        "name": "HSBC HOLDINGS",
+        "lot_size": 400,
+        "stamp_exempt": false
+      },
+      {
+        "symbol": "00700",
+        "name": "TENCENT",
+        "lot_size": 100,
+        "stamp_exempt": false
+      },
+      {
+        "symbol": "00939",
+        "name": "CCB",
+        "lot_size": 1000,
+        "stamp_exempt": false
+      },
+      {
+        "symbol": "00941",
+        "name": "CHINA MOBILE",
+        "lot_size": 500,
+        "stamp_exempt": false
+      },
+      {
+        "symbol": "09988",
+        "name": "BABA-W",
+        "lot_size": 100,
+        "stamp_exempt": false
+      }
+    ],
+    "fees": {
+      "valid_from": "2025-06-30",
+      "valid_to": "2026-09-26",
+      "commission_rate": "0.0003",
+      "minimum_commission": "3",
+      "platform_fee": "0",
+      "stamp_rate": "0.001",
+      "sfc_rate": "0.000027",
+      "afrc_rate": "0.0000015",
+      "trading_rate": "0.0000565",
+      "settlement_rate": "0.000042",
+      "settlement_minimum": "0",
+      "settlement_maximum": null,
+      "slippage_rate": "0.0005",
+      "source": "HKEX transaction fees and HKSCC circular PT/SCS/CCASS/022/2025; commission/platform/slippage are explicit research assumptions"
+    }
+  },
+  "snapshot_sha256": "664792031e1719e8ae956cd98806240d3349a4319075395fd1a1a171f460ef56",
+  "code_revision": "4b30572ecc29704a72d7f03a05e9221505c2dd32",
+  "limitations": [
+    "历史价格收益，不含分红、供股、拆并股调整；不是股东总收益。",
+    "当前观察名单存在幸存者与选择偏差；整手数按当前资料作固定情景，非历史PIT主表。",
+    "缺少完整停牌、退市和公司行动历史；输入缺失会终止研究，不自动补价。",
+    "交收日暂用XHKG交易日代理，T+2收盘释放卖出款；未经CCASS交收日历认证。",
+    "日频开盘参考价加成本情景，不模拟竞价成交、盘口、报价档位和VCM。",
+    "日线按当日收盘后可得的研究假设使用；当前下载的数据不是历史发布快照。",
+    "先按训练期选择固定候选，再评价留出期；这是回顾性时间切分，不是前瞻预注册。"
+  ],
+  "selection": "maximum training Sharpe; alphabetical tie break",
+  "created_at": "2026-09-26T11:54:07.801855+00:00",
+  "source_hashes": {
+    "__init__.py": "01d21d2562422aaa349cef4a7a2fdbb9da2fd4b4bf676f52fdd27129a3a6e9d8",
+    "cli.py": "75a2f0575314cdcd952335ed4aaeb2a5f881ea4d8aeaf4bcd3d90d73402f82dd",
+    "research.py": "17e6622baf69079546885538a778f866b07cd3fe011d5b058af2b6e4766503bf"
+  },
+  "versions": {
+    "pandas": "2.3.3",
+    "numpy": "2.2.6",
+    "quant-data-kit": "0.8.1",
+    "quant-execution": "0.5.1",
+    "quant-factors": "0.3.0",
+    "quant-lab": "0.3.1"
+  },
+  "installed_stack": {
+    "quant-data-kit": {
+      "url": "https://github.com/PureSaber/quant-data-kit.git",
+      "vcs_info": {
+        "commit_id": "9d0e1b995ec910dae8c18d94c66cd5fd59935d21",
+        "requested_revision": "9d0e1b995ec910dae8c18d94c66cd5fd59935d21",
+        "vcs": "git"
+      }
+    },
+    "quant-execution": {
+      "url": "https://github.com/PureSaber/quant-execution.git",
+      "vcs_info": {
+        "commit_id": "7efbe980887e9cb2ab506735b0f1cd21e6102681",
+        "requested_revision": "7efbe980887e9cb2ab506735b0f1cd21e6102681",
+        "vcs": "git"
+      }
+    },
+    "quant-factors": {
+      "url": "https://github.com/PureSaber/quant-factors.git",
+      "vcs_info": {
+        "commit_id": "db9c8ecd27854c50bd70fcd8cd810676b6a330e6",
+        "requested_revision": "db9c8ecd27854c50bd70fcd8cd810676b6a330e6",
+        "vcs": "git"
+      }
+    },
+    "quant-lab": {
+      "url": "https://github.com/PureSaber/quant-lab.git",
+      "vcs_info": {
+        "commit_id": "23d4211b5ab5749c9ec1219bad0e3cc148ae4a57",
+        "requested_revision": "23d4211b5ab5749c9ec1219bad0e3cc148ae4a57",
+        "vcs": "git"
+      }
+    }
+  },
+  "stack_lock": "# Validated research overlay. Install with: pip install --no-deps -r stack.lock\n# Internal packages pin older release commits themselves; these four exact\n# revisions supersede those pins only inside this dedicated research environment.\nquant-data-kit @ git+https://github.com/PureSaber/quant-data-kit.git@9d0e1b995ec910dae8c18d94c66cd5fd59935d21\nquant-execution @ git+https://github.com/PureSaber/quant-execution.git@7efbe980887e9cb2ab506735b0f1cd21e6102681\nquant-factors @ git+https://github.com/PureSaber/quant-factors.git@db9c8ecd27854c50bd70fcd8cd810676b6a330e6\nquant-lab @ git+https://github.com/PureSaber/quant-lab.git@23d4211b5ab5749c9ec1219bad0e3cc148ae4a57\n",
+  "stack_sha256": "4a00330e1028339d8ed171313bf172d1a2a477415a8bb6f9eb92cd563d01ceb9",
+  "requirements_sha256": "07cd2f00f3353801635ccaba1c81983fb34b8c598b32e6bb72e0beebd5dc747a"
+}

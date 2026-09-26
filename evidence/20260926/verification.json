@@ -1,0 +1,14 @@
+{
+  "status": "pass",
+  "code_revision": "4b30572ecc29704a72d7f03a05e9221505c2dd32",
+  "standard_runs": 5,
+  "artifact_hashes": 49,
+  "balanced_transactions": 1613,
+  "signal_dates": "strictly_before_execution",
+  "available_cash": "nonnegative",
+  "installed_commits": "match_stack_lock",
+  "html_links": 7,
+  "windows_python": "3.12.5",
+  "local_tests": 13,
+  "linux_ci": "https://github.com/PureSaber/quant-hk-equity/actions/runs/36240241008"
+}

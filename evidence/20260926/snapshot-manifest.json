@@ -1,0 +1,33 @@
+{
+  "schema": "quant-hk-snapshot/v1",
+  "status": "complete",
+  "provider": "akshare_sina_hk",
+  "symbols": [
+    "00005",
+    "00700",
+    "00939",
+    "00941",
+    "09988"
+  ],
+  "start": "2025-07-01",
+  "end": "2026-09-25",
+  "market": "XHKG",
+  "currency": "HKD",
+  "captured_at": "2026-09-26T11:31:01.289560+00:00",
+  "files": {
+    "bars.parquet": "d3164516f3da558f183daf186c421cc5219c4e9f673b2337b804f35a1082dbc1",
+    "calendar.csv": "ead1c684d438b5771154b66d216b6d145798dabcb08ad7b6e2fbfc9f9027feb8",
+    "raw-00005.csv": "5653e3c704a8ec05177fa56533d4926ea38d84d209f47450e4e2497914600a02",
+    "raw-00700.csv": "0ba39e4d47e81041e4b0b8fb3bb29ab6a2630dc4ed58b43be94262b654ae0ca8",
+    "raw-00939.csv": "91a68f694f060714fc03f1252c183db37d55c0136f40f24c95005ccddb562db1",
+    "raw-00941.csv": "4f9a809d20c4f56d1e5e229667d1facf9472fba7f372ee7b880b60bacd62140e",
+    "raw-09988.csv": "ff2497faa280bb09421d495b6709206eafdce523aad118cac537b6efc353894e"
+  },
+  "corporate_actions_complete": false,
+  "pit_universe": false,
+  "price_basis": "unadjusted_price_return_only",
+  "versions": {
+    "akshare": "1.18.97",
+    "exchange-calendars": "4.13.2"
+  }
+}
