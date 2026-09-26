@@ -1,0 +1,2 @@
+# Preserve frozen JSON bytes so evidence hashes survive cross-platform clones.
+evidence/**/*.json -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
