@@ -78,6 +78,83 @@ def snapshot(tmp_path, case):
     return root
 
 
+def test_v2_calendar_and_unknown_status_block_orders(case):
+    config, bars, calendar = case
+    config["schema"] = "quant-hk-study/v2"
+    config["settlement_calendar_scope"] = "evidenced_purpose_calendar"
+    known = "2025-01-01T00:00:00Z"
+    config["financial"] = {
+        "settlement_calendar_id": "TEST-CCASS",
+        "actions": [],
+        "calendars": [
+            {
+                "calendar_id": "TEST-CCASS",
+                "purpose": "settlement",
+                "version": "v1",
+                "available_at": known,
+                "valid_from": "2025-01-01",
+                "valid_to": "2026-01-01",
+                "open_days": [str(x.date()) for x in calendar.date],
+                "source": "synthetic",
+                "evidence_kind": "synthetic",
+            }
+        ],
+        "lifecycle": [
+            {
+                "event_id": item["symbol"],
+                "instrument_id": item["symbol"],
+                "kind": "listing",
+                "effective_at": known,
+                "available_at": known,
+                "source": "synthetic",
+                "evidence_id": "fixture",
+                "symbol": item["symbol"],
+                "venue": "XHKG",
+                "universe_id": None,
+                "successor_id": None,
+            }
+            for item in config["instruments"]
+        ],
+        "status": [
+            {
+                "instrument_id": item["symbol"],
+                "effective_from": known,
+                "effective_to": "2026-01-01T00:00:00Z",
+                "available_at": known,
+                "buy_status": "unknown",
+                "sell_status": "unknown",
+                "reason": "missing_evidence",
+                "source": "synthetic",
+                "evidence_id": "fixture",
+            }
+            for item in config["instruments"]
+        ],
+    }
+    validate_config(config)
+    prepared = prepare(bars, calendar, config)
+    output = simulate(
+        prepared,
+        calendar,
+        config,
+        strategy="momentum_20d",
+        start=config["train_start"],
+        end=config["data_end"],
+    )[0]
+    assert not output["orders"].empty
+    assert output["orders"].status.eq("blocked_unknown").all()
+    assert output["orders"].quantity.eq(0).all()
+    config["financial"]["calendars"][0]["purpose"] = "trading"
+    with pytest.raises(ValueError):
+        simulate(
+            prepared,
+            calendar,
+            config,
+            strategy="momentum_20d",
+            start=config["train_start"],
+            end=config["data_end"],
+        )
+
+
 def test_future_perturbations_leave_prior_signals_and_orders_unchanged(case):
     config, bars, calendar = case
     original = prepare(bars, calendar, config)

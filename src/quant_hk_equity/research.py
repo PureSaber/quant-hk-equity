@@ -14,6 +14,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from quant_data_kit import AssetClass, FixedPoint, InstrumentSpec
+from quant_data_kit.financial.actions import ActionTerms
+from quant_data_kit.financial.calendars import CalendarBook, PurposeCalendar
+from quant_data_kit.financial.lifecycle import select_universe
+from quant_data_kit.financial.status import permission_asof
 from quant_data_kit.hong_kong import hk_symbol, load_hk_snapshot, sha256
 from quant_execution.contracts import Side
 from quant_execution.hong_kong import HKDailyExecution, HKFeeSchedule
@@ -33,6 +37,18 @@ LIMITATIONS = [
 ]
 
 
+def limitations(config):
+    if config.get("schema") != "quant-hk-study/v2":
+        return list(LIMITATIONS)
+    return [
+        "按输入的拆股和分红权益构造信号总收益；现金到账另记，复杂行动不进入价格信号研究。",
+        "证券池受已知生命周期约束，但候选名单和整手数仍是固定情景，非完整历史市场。",
+        "未知、过期或冲突交易状态阻断下单；数据完整性仍需独立证据。",
+        "交收使用版本化 settlement 日历，不推断其实际CCASS认证或覆盖完整性。",
+        *LIMITATIONS[4:],
+    ]
+
+
 def fp(value, scale=6):
     # Vendor decimal serialization has floating-point tails; price precision is
     # recorded to six decimals, never rounded to an invented exchange tick.
@@ -40,13 +56,23 @@ def fp(value, scale=6):
 
 
 def validate_config(config: dict) -> dict:
-    if config.get("schema") != "quant-hk-study/v1":
+    if config.get("schema") not in {"quant-hk-study/v1", "quant-hk-study/v2"}:
         raise ValueError("Unsupported study schema")
     if config.get("universe_scope") != "current_watchlist_not_historical_universe":
         raise ValueError("Only explicit watchlist studies are supported in v1")
     if config.get("instrument_rules_scope") != "constant_board_lot_scenario_not_pit":
         raise ValueError("v1 requires an explicitly declared constant-rule scenario")
-    if config.get("settlement_calendar_scope") != "XHKG_sessions_proxy_not_verified_CCASS_calendar":
+    if config.get("schema") == "quant-hk-study/v2":
+        if config.get("settlement_calendar_scope") != "evidenced_purpose_calendar":
+            raise ValueError("v2 requires an evidenced settlement-purpose calendar")
+        foundations = config.get("financial", {})
+        if not {"calendars", "settlement_calendar_id", "status", "lifecycle", "actions"} <= set(
+            foundations
+        ):
+            raise ValueError("v2 requires explicit financial evidence, including empty action list")
+    elif (
+        config.get("settlement_calendar_scope") != "XHKG_sessions_proxy_not_verified_CCASS_calendar"
+    ):
         raise ValueError("v1 requires the explicitly labelled settlement-calendar proxy")
     points = [
         pd.Timestamp(config[k]) for k in ("data_start", "train_start", "test_start", "data_end")
@@ -106,7 +132,18 @@ def prepare(bars: pd.DataFrame, calendar: pd.DataFrame, config: dict) -> pd.Data
         )
     if (bars.volume <= 0).any():
         raise ValueError("Non-trading bars need explicit historical status evidence")
-    result = compute_factors(bars, ["momentum_20d", "volatility_20d"])
+    factor_input = bars
+    if config.get("financial"):
+        from quant_data_kit.financial.returns import total_return_panel
+
+        factor_input = total_return_panel(
+            bars, config["financial"]["actions"], timezone="Asia/Hong_Kong"
+        )
+        factor_input["raw_close"] = factor_input.close
+        factor_input["close"] = factor_input.return_close
+    result = compute_factors(factor_input, ["momentum_20d", "volatility_20d"])
+    if "raw_close" in result:
+        result["close"] = result.pop("raw_close")
     result = result.sort_values(["symbol", "date"])
     result["turnover_20d"] = result.groupby("symbol").amount.transform(
         lambda x: x.rolling(20, min_periods=20).median()
@@ -188,6 +225,18 @@ def simulate(prepared, calendar, config, *, strategy, start, end, cost_multiplie
             if isinstance(getattr(fees, k), Decimal)
         }
         fees = replace(fees, **numeric)
+    financial = config.get("financial")
+    purpose_book = (
+        CalendarBook([PurposeCalendar(**x) for x in financial["calendars"]]) if financial else None
+    )
+    actions = [ActionTerms(**x) for x in financial["actions"]] if financial else []
+    processed_actions = set()
+    if any(
+        x.kind in {"merger", "spin_off", "rights_distribution", "rights_exercise"} for x in actions
+    ):
+        raise ValueError(
+            "complex actions require the shared action replay API; HK price-signal study blocks them"
+        )
     account = HKDailyExecution(
         specs,
         initial_cash=fp(config["initial_cash"], 2),
@@ -200,12 +249,33 @@ def simulate(prepared, calendar, config, *, strategy, start, end, cost_multiplie
     for day_index, session in enumerate(sessions.itertuples()):
         frame = prepared[prepared.date.eq(session.date)].set_index("symbol", drop=False)
         at = session.open.to_pydatetime()
+        if purpose_book:
+            settlement = purpose_book.asof(
+                financial["settlement_calendar_id"], "settlement", at, session.date
+            )
+            # Refresh against that day's known calendar; never substitute trading dates.
+            account.settlement_days = pd.DatetimeIndex(settlement.open_days).date.tolist()
+        for action in actions:
+            if action.event_id not in processed_actions and pd.Timestamp(action.effective_at) <= at:
+                if pd.Timestamp(action.effective_at) < opening:
+                    processed_actions.add(action.event_id)
+                    continue
+                account.ledger.apply_corporate_action(action, at=at)
+                processed_actions.add(action.event_id)
         for symbol, row in frame.iterrows():
             account.mark(symbol, fp(row.open), at)
         opening_nav = account.ledger.snapshot(at).nav.to_decimal()
         day_costs = Decimal(0)
         if day_index % config["rebalance_sessions"] == 0:
             selected = select(frame.reset_index(drop=True), strategy, config)
+            if financial:
+                eligible = select_universe(
+                    pd.DataFrame(financial["lifecycle"]),
+                    at,
+                    at,
+                    universe_id=financial.get("universe_id"),
+                )
+                selected = [symbol for symbol in selected if symbol in eligible.eligible]
             holding = account.ledger.snapshot(at).positions
             target = {}
             for symbol, row in frame.iterrows():
@@ -234,6 +304,25 @@ def simulate(prepared, calendar, config, *, strategy, start, end, cost_multiplie
                         continue
                     row = frame.loc[symbol]
                     quantity = abs(delta)
+                    if financial:
+                        permission = permission_asof(
+                            pd.DataFrame(financial["status"]), symbol, at, at
+                        )
+                        allowed = permission.buy if side is Side.BUY else permission.sell
+                        if allowed != "tradable":
+                            orders.append(
+                                {
+                                    "timestamp": at.isoformat(),
+                                    "strategy": strategy,
+                                    "symbol": symbol,
+                                    "side": side.value,
+                                    "quantity": 0,
+                                    "requested_quantity": quantity,
+                                    "status": f"blocked_{allowed}",
+                                    "reason": permission.reason,
+                                }
+                            )
+                            continue
                     if side is Side.BUY:
                         quantity = min(
                             quantity,
@@ -367,7 +456,7 @@ def run_study(snapshot: Path, config_path: Path, output: Path) -> dict:
         "config": config,
         "snapshot_sha256": sha256(snapshot / "manifest.json"),
         "code_revision": code_revision(),
-        "limitations": LIMITATIONS,
+        "limitations": limitations(config),
         "selection": "maximum training Sharpe; alphabetical tie break",
         "created_at": pd.Timestamp.now(tz=UTC).isoformat(),
         "source_hashes": {p.name: sha256(p) for p in sorted(Path(__file__).parent.glob("*.py"))},
@@ -397,7 +486,12 @@ def run_study(snapshot: Path, config_path: Path, output: Path) -> dict:
     (output / "study.json").write_text(
         json.dumps(frozen, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    result = {"status": "running", "investable": False, "training": {}, "limitations": LIMITATIONS}
+    result = {
+        "status": "running",
+        "investable": False,
+        "training": {},
+        "limitations": limitations(config),
+    }
     try:
         train_end = (pd.Timestamp(config["test_start"]) - pd.Timedelta(days=1)).date().isoformat()
         train_runs = {}
@@ -508,11 +602,11 @@ def render_report(output, result, returns, benchmark):
         f"<td>{m['fees_and_slippage_hkd']:,.2f}</td></tr>"
         for label, m in labels
     )
-    risks = "".join(f"<li>{html.escape(x)}</li>" for x in LIMITATIONS)
+    risks = "".join(f"<li>{html.escape(x)}</li>" for x in result["limitations"])
     document = f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <title>港股日频研究</title><style>body{{font:16px/1.7 system-ui;max-width:1100px;margin:40px auto;padding:0 24px;color:#183344;background:#f7f9fa}}h1{{font-size:34px}}table{{border-collapse:collapse;width:100%;background:white}}td,th{{text-align:left;padding:12px;border-bottom:1px solid #dae2e8}}.note{{background:#fff1cf;padding:16px;border-left:5px solid #ae7100}}a{{color:#096888}}</style>
 <p>PURESABER / XHKG / HKD</p><h1>港股日频基线研究</h1>
-<div class="note"><b>探索性价格收益研究，不能作为可投资回测认证。</b><br>不含分红及其他公司行动；当前观察名单与固定整手数情景具有历史偏差。</div>
+<div class="note"><b>探索性研究，不能作为可投资回测认证。</b><br>公司行动及日历口径见下方证据边界；候选名单与固定整手数情景仍有历史偏差。</div>
 <p>训练期选中：{html.escape(result["selected"])}。留出期：{returns.date.iloc[0]}至{returns.date.iloc[-1]}。
 所有信号取前一交易日，按下一交易日开盘参考价计入费用；同池等权基准使用同样成本和现金约束。</p>
 <table><tr><th>情景</th><th>价格净收益</th><th>最大回撤</th><th>Sharpe（无风险利率0）</th><th>费用及滑点/HKD</th></tr>{rows}</table>
