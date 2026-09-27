@@ -1,7 +1,7 @@
 # Validated research overlay. Install with: pip install --no-deps -r stack.lock
 # Internal packages pin older release commits themselves; these four exact
 # revisions supersede those pins only inside this dedicated research environment.
-quant-data-kit @ git+https://github.com/PureSaber/quant-data-kit.git@9d0e1b995ec910dae8c18d94c66cd5fd59935d21
-quant-execution @ git+https://github.com/PureSaber/quant-execution.git@7efbe980887e9cb2ab506735b0f1cd21e6102681
-quant-factors @ git+https://github.com/PureSaber/quant-factors.git@db9c8ecd27854c50bd70fcd8cd810676b6a330e6
-quant-lab @ git+https://github.com/PureSaber/quant-lab.git@23d4211b5ab5749c9ec1219bad0e3cc148ae4a57
+quant-data-kit @ git+https://github.com/PureSaber/quant-data-kit.git@271a65ee383158b3dd7570e19a3f2b4123f09f79
+quant-execution @ git+https://github.com/PureSaber/quant-execution.git@1bf6a627abf5a9a0d2cd2c0b4d3ad5740d464b2a
+quant-factors @ git+https://github.com/PureSaber/quant-factors.git@4ebb8ae317b6cc35dfc5fad924fc4d9f1c3d92e2
+quant-lab @ git+https://github.com/PureSaber/quant-lab.git@6ad789442a5ff7b5e3f68d241ecf0ee327f7e82f
