@@ -3,5 +3,5 @@
 # revisions supersede those pins only inside this dedicated research environment.
 quant-data-kit @ git+https://github.com/PureSaber/quant-data-kit.git@271a65ee383158b3dd7570e19a3f2b4123f09f79
 quant-execution @ git+https://github.com/PureSaber/quant-execution.git@1bf6a627abf5a9a0d2cd2c0b4d3ad5740d464b2a
-quant-factors @ git+https://github.com/PureSaber/quant-factors.git@4ebb8ae317b6cc35dfc5fad924fc4d9f1c3d92e2
+quant-factors @ git+https://github.com/PureSaber/quant-factors.git@4ff2ab39f1557c6c1247c1406a007fbd923196fd
 quant-lab @ git+https://github.com/PureSaber/quant-lab.git@6ad789442a5ff7b5e3f68d241ecf0ee327f7e82f
