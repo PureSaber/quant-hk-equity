@@ -197,12 +197,18 @@ def test_missing_and_nontrading_sessions_are_not_filled(case):
         prepare(changed, calendar, config)
 
 
-def test_study_is_reproducible_auditable_and_immutable(tmp_path, case):
+def test_study_is_reproducible_auditable_and_immutable(tmp_path, case, monkeypatch):
+    from quant_lab.contracts_v2 import load_and_validate_run_v2
+
+    monkeypatch.setattr("quant_hk_equity.research.clean_git_commit", lambda root: "a" * 40)
     config, _, _ = case
     root = snapshot(tmp_path, case)
     config_file = tmp_path / "config.json"
     config_file.write_text(json.dumps(config))
     results = [run_study(root, config_file, tmp_path / label) for label in ("one", "two")]
+    published = load_and_validate_run_v2(tmp_path / "one/holdout")
+    assert published.tags["rankable"] == "false"
+    assert published.base_currency == "HKD"
     assert results[0] == results[1]
     assert results[0]["investable"] is False
     assert (tmp_path / "one/holdout/ledger.json").read_bytes() == (

@@ -11,3 +11,7 @@
 `corporate_actions_complete=false`和`pit_universe=false`是当前采集器的真实能力边界。任何后续认证必须增加真实历史数据和相应测试，不能只改布尔值。
 
 新浪接口返回的历史数据存在局部质量问题，源数据会被校验，不通过时拒绝入库。东方财富接口需要显式选择，不能作为静默兜底。接口文档：https://akshare.akfamily.xyz/data/stock/stock.html
+
+## Exploratory standard/v2 export
+
+A clean Git checkout additionally publishes a `standard/v2` research profile through the pinned quant-lab adapter. It is always `investable=false` and `rankable=false`. A dirty or unavailable checkout retains the original report without claiming a clean code revision. Dataset identities use content hashes, and date-only NAV observations are stamped at the end of their UTC day. This profile does not certify a historical universe or replace the original accounting evidence.

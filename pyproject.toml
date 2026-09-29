@@ -9,7 +9,7 @@ description = "Auditable Hong Kong daily cash-equity research"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-dependencies = ["pandas>=2,<3", "numpy>=1.26,<2.3", "pyarrow>=14", "exchange-calendars>=4.10,<5", "akshare>=1.12", "quant-data-kit", "quant-execution", "quant-factors", "quant-lab"]
+dependencies = ["pandas>=2,<3", "numpy>=1.26,<2.3", "pyarrow>=14", "exchange-calendars>=4.10,<5", "akshare>=1.12", "quant-data-kit", "quant-execution", "quant-factors", "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@8b87aa176d1b0eaacbe918593b83bbec6d1baa33"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.9"]
