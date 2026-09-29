@@ -24,6 +24,7 @@ from quant_execution.hong_kong import HKDailyExecution, HKFeeSchedule
 from quant_execution.schemas import execution_payload
 from quant_factors import compute_factors
 from quant_lab.contracts import write_standard_run
+from quant_lab.research_v2 import clean_git_commit, write_exploratory_run_v2
 
 CANDIDATES = {"momentum_20d", "low_volatility_20d"}
 LIMITATIONS = [
@@ -429,6 +430,33 @@ def simulate(prepared, calendar, config, *, strategy, start, end, cost_multiplie
     )
 
 
+def _publish_hk_v2(run_dir, frames, summary, config, snapshot_sha256) -> None:
+    commit = clean_git_commit(Path(__file__).resolve().parents[2])
+    if commit is None:
+        return
+    returns = frames["returns"]
+    positions = frames["positions"].copy()
+    positions["instrument_id"] = positions["symbol"]
+    positions["mark_price"] = positions["market_value"] / positions["quantity"].replace(0, pd.NA)
+    positions = positions.dropna(subset=["mark_price"])
+    write_exploratory_run_v2(
+        run_dir,
+        project="quant-hk-equity",
+        run_id=run_dir.name,
+        strategy_id=str(returns.strategy.iloc[0]),
+        currency="HKD",
+        code_version=commit,
+        dataset_snapshots={"hk": snapshot_sha256},
+        nav=returns.rename(columns={"date": "date"})[["date", "nav", "gross_return", "net_return"]],
+        positions=positions[["date", "instrument_id", "quantity", "mark_price"]],
+        comparability="current_watchlist_not_historical_universe",
+        metrics={
+            key: summary[key] for key in summary if isinstance(summary[key], (int, float, str))
+        },
+        config={"universe_scope": config.get("universe_scope", "current_watchlist")},
+    )
+
+
 def code_revision() -> str:
     root = Path(__file__).resolve().parents[2]
     if not (root / ".git").exists():
@@ -569,8 +597,15 @@ def run_study(snapshot: Path, config_path: Path, output: Path) -> dict:
                 config=config,
                 code_version=frozen["code_revision"],
                 dataset_snapshots={"hk": frozen["snapshot_sha256"]},
-                tags={"market": "XHKG", "evidence": "exploratory", "investable": "false"},
+                tags={
+                    "market": "XHKG",
+                    "evidence": "exploratory",
+                    "investable": "false",
+                    "comparability": "current_watchlist_not_historical_universe",
+                    "rankable": "false",
+                },
             )
+            _publish_hk_v2(run_dir, frames, summary, config, frozen["snapshot_sha256"])
             (run_dir / "ledger.json").write_text(json.dumps(journal, indent=2), encoding="utf-8")
             signals.to_csv(run_dir / "signals.csv", index=False)
         render_report(output, result, holdout[0]["returns"], benchmark[0]["returns"])
