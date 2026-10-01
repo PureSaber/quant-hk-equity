@@ -16,6 +16,7 @@ import pandas as pd
 from quant_data_kit import AssetClass, FixedPoint, InstrumentSpec
 from quant_data_kit.financial.actions import ActionTerms
 from quant_data_kit.financial.calendars import CalendarBook, PurposeCalendar
+from quant_data_kit.financial.common import utc
 from quant_data_kit.financial.lifecycle import select_universe
 from quant_data_kit.financial.status import permission_asof
 from quant_data_kit.hong_kong import hk_symbol, load_hk_snapshot, sha256
@@ -54,6 +55,57 @@ def fp(value, scale=6):
     # Vendor decimal serialization has floating-point tails; price precision is
     # recorded to six decimals, never rounded to an invented exchange tick.
     return FixedPoint.from_decimal(Decimal(str(value)), scale, rounding="ROUND_HALF_UP")
+
+
+def _action_ready_at(action: ActionTerms) -> pd.Timestamp:
+    return max(utc(action.effective_at), utc(action.available_at))
+
+
+def _dividend_key(action: ActionTerms) -> tuple[str, str, str] | None:
+    if not action.kind.startswith("dividend_"):
+        return None
+    return (
+        action.instrument_id,
+        action.currency,
+        str(pd.Timestamp(action.entitlement_date).date()),
+    )
+
+
+def _apply_due_actions(account, actions, processed, skipped_entitlements, *, at, opening) -> None:
+    """Apply known actions chronologically while preserving dividend phase dependency."""
+    due = [
+        action
+        for action in actions
+        if action.event_id not in processed and _action_ready_at(action) <= pd.Timestamp(at)
+    ]
+    while due:
+        progressed = False
+        for action in due:
+            key = _dividend_key(action)
+            if utc(action.effective_at) < pd.Timestamp(opening):
+                processed.add(action.event_id)
+                if action.kind == "dividend_entitlement":
+                    skipped_entitlements.add(key)
+                progressed = True
+                continue
+            if action.kind == "dividend_payment":
+                entitlements = [
+                    candidate
+                    for candidate in actions
+                    if candidate.kind == "dividend_entitlement" and _dividend_key(candidate) == key
+                ]
+                if entitlements and any(x.event_id not in processed for x in entitlements):
+                    continue
+                if key in skipped_entitlements:
+                    processed.add(action.event_id)
+                    progressed = True
+                    continue
+            account.ledger.apply_corporate_action(action, at=at)
+            processed.add(action.event_id)
+            progressed = True
+        if not progressed:
+            break
+        due = [action for action in due if action.event_id not in processed]
 
 
 def validate_config(config: dict) -> dict:
@@ -230,8 +282,30 @@ def simulate(prepared, calendar, config, *, strategy, start, end, cost_multiplie
     purpose_book = (
         CalendarBook([PurposeCalendar(**x) for x in financial["calendars"]]) if financial else None
     )
-    actions = [ActionTerms(**x) for x in financial["actions"]] if financial else []
+    action_phase = {"dividend_entitlement": 0, "dividend_payment": 2}
+    actions = (
+        sorted(
+            (ActionTerms(**x) for x in financial["actions"]),
+            key=lambda action: (
+                _action_ready_at(action),
+                utc(action.effective_at),
+                action_phase.get(action.kind, 1),
+                action.event_id,
+            ),
+        )
+        if financial
+        else []
+    )
     processed_actions = set()
+    skipped_entitlements = set()
+    if any(
+        action.kind != "dividend_payment" and utc(action.available_at) > utc(action.effective_at)
+        for action in actions
+    ):
+        raise ValueError(
+            "late-known non-payment action requires historical position replay; "
+            "current holdings cannot reconstruct past entitlements"
+        )
     if any(
         x.kind in {"merger", "spin_off", "rights_distribution", "rights_exercise"} for x in actions
     ):
@@ -256,13 +330,14 @@ def simulate(prepared, calendar, config, *, strategy, start, end, cost_multiplie
             )
             # Refresh against that day's known calendar; never substitute trading dates.
             account.settlement_days = pd.DatetimeIndex(settlement.open_days).date.tolist()
-        for action in actions:
-            if action.event_id not in processed_actions and pd.Timestamp(action.effective_at) <= at:
-                if pd.Timestamp(action.effective_at) < opening:
-                    processed_actions.add(action.event_id)
-                    continue
-                account.ledger.apply_corporate_action(action, at=at)
-                processed_actions.add(action.event_id)
+        _apply_due_actions(
+            account,
+            actions,
+            processed_actions,
+            skipped_entitlements,
+            at=at,
+            opening=opening,
+        )
         for symbol, row in frame.iterrows():
             account.mark(symbol, fp(row.open), at)
         opening_nav = account.ledger.snapshot(at).nav.to_decimal()
@@ -412,7 +487,11 @@ def simulate(prepared, calendar, config, *, strategy, start, end, cost_multiplie
         {
             "fees_and_slippage_hkd": float(returns.cost_hkd.sum()),
             "filled_orders": sum(o["status"] == "filled" for o in orders),
-            "return_basis": "price_only_excludes_corporate_actions",
+            "return_basis": (
+                "price_plus_evidenced_corporate_actions"
+                if config["schema"] == "quant-hk-study/v2"
+                else "price_only_excludes_corporate_actions"
+            ),
             "investable": False,
         }
     )
@@ -603,6 +682,7 @@ def run_study(snapshot: Path, config_path: Path, output: Path) -> dict:
                     "investable": "false",
                     "comparability": "current_watchlist_not_historical_universe",
                     "rankable": "false",
+                    "cost_unit": "currency",
                 },
             )
             _publish_hk_v2(run_dir, frames, summary, config, frozen["snapshot_sha256"])
