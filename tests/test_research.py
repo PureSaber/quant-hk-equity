@@ -78,6 +78,87 @@ def snapshot(tmp_path, case):
     return root
 
 
+def financial_evidence(config, calendar, actions):
+    known = "2025-01-01T00:00:00Z"
+    symbols = [item["symbol"] for item in config["instruments"]]
+    return {
+        "settlement_calendar_id": "TEST-CCASS",
+        "actions": actions,
+        "calendars": [
+            {
+                "calendar_id": "TEST-CCASS",
+                "purpose": "settlement",
+                "version": "v1",
+                "available_at": known,
+                "valid_from": "2025-01-01",
+                "valid_to": "2026-01-01",
+                "open_days": [str(value.date()) for value in calendar.date],
+                "source": "synthetic",
+                "evidence_kind": "synthetic",
+            }
+        ],
+        "lifecycle": [
+            {
+                "event_id": symbol,
+                "instrument_id": symbol,
+                "kind": "listing",
+                "effective_at": known,
+                "available_at": known,
+                "source": "synthetic",
+                "evidence_id": "fixture",
+                "symbol": symbol,
+                "venue": "XHKG",
+                "universe_id": None,
+                "successor_id": None,
+            }
+            for symbol in symbols
+        ],
+        "status": [
+            {
+                "instrument_id": symbol,
+                "effective_from": known,
+                "effective_to": "2026-01-01T00:00:00Z",
+                "available_at": known,
+                "buy_status": "tradable",
+                "sell_status": "tradable",
+                "reason": "fixture",
+                "source": "synthetic",
+                "evidence_id": "fixture",
+            }
+            for symbol in symbols
+        ],
+    }
+
+
+def dividend_actions(
+    symbol, entitlement_date, payment_date, entitlement_available, payment_available
+):
+    common = {
+        "instrument_id": symbol,
+        "currency": "HKD",
+        "source": "synthetic",
+        "evidence_id": "fixture",
+        "cash_per_unit": "10",
+        "entitlement_date": str(entitlement_date.date()),
+    }
+    return [
+        {
+            **common,
+            "event_id": "payment",
+            "kind": "dividend_payment",
+            "effective_at": payment_date.tz_localize("UTC").isoformat(),
+            "available_at": payment_available,
+        },
+        {
+            **common,
+            "event_id": "entitlement",
+            "kind": "dividend_entitlement",
+            "effective_at": entitlement_date.tz_localize("UTC").isoformat(),
+            "available_at": entitlement_available,
+        },
+    ]
+
+
 def test_v2_calendar_and_unknown_status_block_orders(case):
     config, bars, calendar = case
     config["schema"] = "quant-hk-study/v2"
@@ -155,6 +236,129 @@ def test_v2_calendar_and_unknown_status_block_orders(case):
         )
 
 
+def test_v2_actions_wait_for_availability_and_preserve_dividend_order(case):
+    config, bars, calendar = case
+    config.update(
+        schema="quant-hk-study/v2",
+        settlement_calendar_scope="evidenced_purpose_calendar",
+        top_n=2,
+        invested_fraction="1",
+    )
+    sessions = calendar.loc[calendar.date.ge(pd.Timestamp(config["train_start"])), "date"].tolist()
+    actions = dividend_actions(
+        config["instruments"][0]["symbol"],
+        sessions[1],
+        sessions[5],
+        "2025-01-01T00:00:00Z",
+        sessions[6].tz_localize("UTC").isoformat(),
+    )
+    config["financial"] = financial_evidence(config, calendar, actions)
+
+    _, summary, journal, _ = simulate(
+        prepare(bars, calendar, config),
+        calendar,
+        config,
+        strategy="momentum_20d",
+        start=config["train_start"],
+        end=str(sessions[8].date()),
+    )
+
+    action_ids = [
+        row["reference_id"]
+        for row in journal
+        if str(row.get("reference_id", "")).startswith("financial-action:")
+    ]
+    assert action_ids == ["financial-action:entitlement", "financial-action:payment"]
+    assert summary["return_basis"] == "price_plus_evidenced_corporate_actions"
+
+
+def test_v2_late_pre_start_entitlement_does_not_grant_new_holdings(case):
+    config, bars, calendar = case
+    config.update(
+        schema="quant-hk-study/v2",
+        settlement_calendar_scope="evidenced_purpose_calendar",
+        top_n=2,
+        invested_fraction="1",
+    )
+    sessions = calendar.loc[calendar.date.ge(pd.Timestamp(config["train_start"])), "date"].tolist()
+    prior_session = calendar.loc[
+        calendar.date.lt(pd.Timestamp(config["train_start"])), "date"
+    ].iloc[-1]
+    actions = dividend_actions(
+        config["instruments"][0]["symbol"],
+        prior_session,
+        sessions[5],
+        "2025-01-01T00:00:00Z",
+        sessions[5].tz_localize("UTC").isoformat(),
+    )
+    config["financial"] = financial_evidence(config, calendar, actions)
+
+    with_actions = simulate(
+        prepare(bars, calendar, config),
+        calendar,
+        config,
+        strategy="equal_weight",
+        start=config["train_start"],
+        end=str(sessions[8].date()),
+    )
+    without = copy.deepcopy(config)
+    without["financial"]["actions"] = []
+    without_actions = simulate(
+        prepare(bars, calendar, without),
+        calendar,
+        without,
+        strategy="equal_weight",
+        start=config["train_start"],
+        end=str(sessions[8].date()),
+    )
+
+    assert not any("financial-action:" in json.dumps(row) for row in with_actions[2])
+    assert with_actions[1]["ending_nav_hkd"] == without_actions[1]["ending_nav_hkd"]
+
+    late_known = copy.deepcopy(config)
+    late_known["financial"]["actions"][1]["available_at"] = (
+        sessions[4].tz_localize("UTC").isoformat()
+    )
+    with pytest.raises(ValueError, match="late-known corporate action"):
+        prepare(bars, calendar, late_known)
+
+
+@pytest.mark.parametrize("kind", ["dividend_entitlement", "split"])
+def test_v2_simulation_rejects_late_known_historical_position_actions(case, kind):
+    config, bars, calendar = case
+    config.update(
+        schema="quant-hk-study/v2",
+        settlement_calendar_scope="evidenced_purpose_calendar",
+    )
+    sessions = calendar.loc[calendar.date.ge(pd.Timestamp(config["train_start"])), "date"].tolist()
+    config["financial"] = financial_evidence(config, calendar, [])
+    prepared = prepare(bars, calendar, config)
+    action = {
+        "event_id": kind,
+        "instrument_id": config["instruments"][0]["symbol"],
+        "kind": kind,
+        "effective_at": sessions[1].tz_localize("UTC").isoformat(),
+        "available_at": sessions[2].tz_localize("UTC").isoformat(),
+        "currency": "HKD",
+        "source": "synthetic",
+        "evidence_id": "fixture",
+        "ratio": "2" if kind == "split" else "1",
+    }
+    if kind == "dividend_entitlement":
+        action.update(cash_per_unit="10", entitlement_date=str(sessions[1].date()))
+    config["financial"]["actions"] = [action]
+
+    with pytest.raises(ValueError, match="historical position replay"):
+        simulate(
+            prepared,
+            calendar,
+            config,
+            strategy="momentum_20d",
+            start=config["train_start"],
+            end=str(sessions[4].date()),
+        )
+
+
 def test_future_perturbations_leave_prior_signals_and_orders_unchanged(case):
     config, bars, calendar = case
     original = prepare(bars, calendar, config)
@@ -211,6 +415,7 @@ def test_study_is_reproducible_auditable_and_immutable(tmp_path, case, monkeypat
     assert published.base_currency == "HKD"
     assert results[0] == results[1]
     assert results[0]["investable"] is False
+    assert results[0]["holdout"]["return_basis"] == "price_only_excludes_corporate_actions"
     assert (tmp_path / "one/holdout/ledger.json").read_bytes() == (
         tmp_path / "two/holdout/ledger.json"
     ).read_bytes()
@@ -222,6 +427,10 @@ def test_study_is_reproducible_auditable_and_immutable(tmp_path, case, monkeypat
     assert (test.available_cash_hkd >= 0).all()
     manifest = json.loads((tmp_path / "one/checksums.json").read_text())
     assert all(sha256(tmp_path / "one" / name) == digest for name, digest in manifest.items())
+    standard_manifest = json.loads(
+        (tmp_path / "one/holdout/standard/run_manifest.json").read_text()
+    )
+    assert standard_manifest["tags"]["cost_unit"] == "currency"
     with pytest.raises(FileExistsError):
         run_study(root, config_file, tmp_path / "one")
 
