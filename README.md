@@ -45,6 +45,8 @@ quant-hk run --config configs/baseline.json --snapshot data/hk-snapshot --output
 
 Report Hub从索引定位产物后重新核对标准清单与哈希；损坏的v2不能降级采用v1。原始港股成交、交收和现金证据仍以应用自己的账本与报告为准。此接入不改变M8发行覆盖或市场数据GA状态。
 
+v2保留全部原始绩效，并通过`backtest_stats`提供累计收益、252期年化收益、零无风险利率Sharpe和回撤；`measurement_basis`保留实际区间、HKD、来源及价格/公司行动收益口径。训练、留出、基准与双倍成本各自发布，不能跨区间直接排名。原配置随`study_config`保存，不重新计算或替换原研究结果。
+
 ## 验证
 
 ```sh

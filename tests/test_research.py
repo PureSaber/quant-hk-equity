@@ -413,6 +413,17 @@ def test_study_is_reproducible_auditable_and_immutable(tmp_path, case, monkeypat
     published = load_and_validate_run_v2(tmp_path / "one/holdout")
     assert published.tags["rankable"] == "false"
     assert published.base_currency == "HKD"
+    exported = json.loads(
+        (tmp_path / "one/holdout/standard/v2/metrics.json").read_text(encoding="utf-8")
+    )
+    native = results[0]["holdout"]
+    assert all(exported[key] == value for key, value in native.items())
+    row = exported["backtest_stats"][0]
+    assert row["total_return"] == native["total_return"]
+    assert row["ann_return"] == native["annualized_return"]
+    assert row["sharpe"] == native["sharpe_zero_rf"]
+    assert row["max_drawdown"] == native["max_drawdown"]
+    assert exported["measurement_basis"]["annualization_periods"] == 252
     assert results[0] == results[1]
     assert results[0]["investable"] is False
     assert results[0]["holdout"]["return_basis"] == "price_only_excludes_corporate_actions"
