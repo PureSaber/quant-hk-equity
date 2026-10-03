@@ -530,9 +530,32 @@ def _publish_hk_v2(run_dir, frames, summary, config, snapshot_sha256) -> None:
         positions=positions[["date", "instrument_id", "quantity", "mark_price"]],
         comparability="current_watchlist_not_historical_universe",
         metrics={
-            key: summary[key] for key in summary if isinstance(summary[key], (int, float, str))
+            **summary,
+            "measurement_basis": {
+                "period_start": str(returns.date.iloc[0]),
+                "period_end": str(returns.date.iloc[-1]),
+                "currency": "HKD",
+                "annualization_periods": 252,
+                "sharpe_risk_free_rate": 0,
+                "return_basis": summary["return_basis"],
+                "initial_cash": config["initial_cash"],
+                "provider": config["provider"],
+                "sample": run_dir.name,
+            },
+            "backtest_stats": [
+                {
+                    "portfolio": str(returns.strategy.iloc[0]),
+                    "total_return": summary["total_return"],
+                    "ann_return": summary["annualized_return"],
+                    "sharpe": summary["sharpe_zero_rf"],
+                    "max_drawdown": summary["max_drawdown"],
+                }
+            ],
         },
-        config={"universe_scope": config.get("universe_scope", "current_watchlist")},
+        config={
+            "universe_scope": config.get("universe_scope", "current_watchlist"),
+            "study_config": config,
+        },
     )
 
 
