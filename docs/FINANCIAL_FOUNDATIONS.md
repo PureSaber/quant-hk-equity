@@ -27,3 +27,5 @@ QExec每阶段只接收当时已知且该阶段实际使用的前缀。`record.a
 `returns.csv`只覆盖实际收盘收益区间。`result.json`分别记录`daily_return_end`、`account_as_of`与`price_coverage_end`，因此最后一个收盘后的付款能改变`as_of_nav_hkd`，不会伪造一条日收益或虚构零基准收益。
 
 发布协议为QExec清单优先、顶层场景清单最后。失败可能保留已经完整发布的`execution/manifest.json`并写`FAILED.json`，但不会发布顶层成功清单。消费方必须调用磁盘重放验证器；仅核对文件哈希不足以证明旁车、结果与执行账本一致。
+
+场景运行时把实际使用的依赖API绑定到分发RECORD及可用摘要。editable依赖除要求干净Git提交和跟踪路径外，还直接读取对应HEAD blob与实际导入源码比较；只接受Python源码LF与CRLF的换行等价，不依赖可能被`assume-unchanged`或`skip-worktree`隐藏的状态与diff结果，也不执行任意clean filter来改变比较语义。

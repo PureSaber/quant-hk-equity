@@ -1621,6 +1621,7 @@ def _git_identity(root: Path, name: str, source_files: tuple[Path, ...] = ()) ->
         raise ScenarioValidationError(
             "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} editable source is missing or dirty"
         )
+    identity = head.stdout.strip()
     if source_files:
         relative_files = [path.as_posix() for path in source_files]
         tracked = subprocess.run(
@@ -1630,19 +1631,28 @@ def _git_identity(root: Path, name: str, source_files: tuple[Path, ...] = ()) ->
             text=True,
             check=False,
         )
-        unchanged = subprocess.run(
-            ["git", "diff", "--quiet", "HEAD", "--", *relative_files],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if tracked.returncode or unchanged.returncode:
+        if tracked.returncode:
             raise ScenarioValidationError(
                 "DEPENDENCY_IDENTITY_UNVERIFIED",
-                f"{name} imported editable files are not clean tracked HEAD files",
+                f"{name} imported editable files are not tracked by HEAD",
             )
-    return head.stdout.strip()
+        for relative in source_files:
+            head_blob = subprocess.run(
+                ["git", "cat-file", "blob", f"{identity}:{relative.as_posix()}"],
+                cwd=root,
+                capture_output=True,
+                text=False,
+                check=False,
+            )
+            actual = (root / relative).read_bytes()
+            if head_blob.returncode or actual.replace(b"\r\n", b"\n") != head_blob.stdout.replace(
+                b"\r\n", b"\n"
+            ):
+                raise ScenarioValidationError(
+                    "DEPENDENCY_IDENTITY_UNVERIFIED",
+                    f"{name} imported editable file {relative.as_posix()} differs from HEAD content",
+                )
+    return identity
 
 
 def _normalized_distribution_name(value: str) -> str:

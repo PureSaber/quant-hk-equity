@@ -23,7 +23,7 @@ quant-hk run --config configs/baseline.json --snapshot data/hk-snapshot --output
 
 ### 软件分红场景
 
-分红场景使用独立的`stack.dividend-scenario.lock`，默认研究环境及`stack.lock`保持冻结。必须在新虚拟环境安装场景栈；运行时会把实际导入的关键API绑定到对应分发的RECORD文件、可用文件摘要和Git提交；editable安装还要求导入文件属于干净HEAD中的跟踪文件。无法证明依赖身份时失败关闭。
+分红场景使用独立的`stack.dividend-scenario.lock`，默认研究环境及`stack.lock`保持冻结。必须在新虚拟环境安装场景栈；运行时会把实际导入的关键API绑定到对应分发的RECORD文件、可用文件摘要和Git提交；editable安装还要求导入文件属于干净HEAD中的跟踪文件，并把实际源码字节直接与HEAD blob比较，仅将Python源码的LF与CRLF换行视为等价。无法证明依赖身份时失败关闭。
 
 ```sh
 python -m pip install -r requirements.lock

@@ -657,23 +657,25 @@ def test_dependency_identity_fail_closed_branches(tmp_path, monkeypatch):
     monkeypatch.setattr(scenario_module.subprocess, "run", lambda *args, **kwargs: next(responses))
     assert scenario_module._git_identity(git_root, "dependency") == "abc"
 
+    imported = git_root / "ignored" / "module.py"
+    imported.parent.mkdir()
+    imported.write_bytes(b"VALUE = 1\r\n")
     responses = iter(
         [
             SimpleNamespace(returncode=0, stdout="abc\n"),
             SimpleNamespace(returncode=0, stdout=""),
             SimpleNamespace(returncode=1, stdout=""),
-            SimpleNamespace(returncode=0, stdout=""),
         ]
     )
     monkeypatch.setattr(scenario_module.subprocess, "run", lambda *args, **kwargs: next(responses))
-    with pytest.raises(ScenarioValidationError, match="not clean tracked HEAD files"):
+    with pytest.raises(ScenarioValidationError, match="not tracked by HEAD"):
         scenario_module._git_identity(git_root, "dependency", (Path("ignored/module.py"),))
     responses = iter(
         [
             SimpleNamespace(returncode=0, stdout="abc\n"),
             SimpleNamespace(returncode=0, stdout=""),
             SimpleNamespace(returncode=0, stdout="ignored/module.py\n"),
-            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout=b"VALUE = 1\n"),
         ]
     )
     monkeypatch.setattr(scenario_module.subprocess, "run", lambda *args, **kwargs: next(responses))
@@ -682,17 +684,18 @@ def test_dependency_identity_fail_closed_branches(tmp_path, monkeypatch):
     )
 
 
-def test_editable_identity_rejects_gitignored_import_copy(tmp_path):
+def test_editable_identity_compares_git_head_content_despite_hidden_index_flags(tmp_path):
     root = tmp_path / "editable-repository"
     tracked = root / "src" / "module.py"
     ignored = root / "build" / "lib" / "module.py"
     tracked.parent.mkdir(parents=True)
     ignored.parent.mkdir(parents=True)
-    (root / ".gitignore").write_text("build/\n", encoding="utf-8")
-    tracked.write_text("VALUE = 'tracked'\n", encoding="utf-8")
-    ignored.write_text("VALUE = 'ignored-copy'\n", encoding="utf-8")
+    (root / ".gitignore").write_bytes(b"build/\n")
+    tracked.write_bytes(b"VALUE = 'tracked'\n")
+    ignored.write_bytes(b"VALUE = 'ignored-copy'\n")
     commands = (
         ("git", "init"),
+        ("git", "config", "core.autocrlf", "false"),
         ("git", "add", ".gitignore", "src/module.py"),
         (
             "git",
@@ -726,8 +729,52 @@ def test_editable_identity_rejects_gitignored_import_copy(tmp_path):
     ignored_files = scenario_module._verify_editable_files(
         "dependency", root, {"module": (ignored, "module.py")}
     )
-    with pytest.raises(ScenarioValidationError, match="not clean tracked HEAD files"):
+    with pytest.raises(ScenarioValidationError, match="not tracked by HEAD"):
         scenario_module._git_identity(root, "dependency", ignored_files)
+
+    original = tracked.read_bytes()
+    for flag, clear_flag in (
+        ("--assume-unchanged", "--no-assume-unchanged"),
+        ("--skip-worktree", "--no-skip-worktree"),
+    ):
+        marked = scenario_module.subprocess.run(
+            ("git", "update-index", flag, "src/module.py"),
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert marked.returncode == 0, marked.stderr
+        assert scenario_module._git_identity(root, "dependency", tracked_files)
+        tracked.write_bytes(original.replace(b"\n", b"\r\n"))
+        assert scenario_module._git_identity(root, "dependency", tracked_files)
+        tracked.write_bytes(original + b"# hidden source change\n")
+        status = scenario_module.subprocess.run(
+            ("git", "status", "--porcelain"),
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        hidden_diff = scenario_module.subprocess.run(
+            ("git", "diff", "--quiet", "HEAD", "--", "src/module.py"),
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert status.stdout == "" and hidden_diff.returncode == 0
+        with pytest.raises(ScenarioValidationError, match="differs from HEAD content"):
+            scenario_module._git_identity(root, "dependency", tracked_files)
+        cleared = scenario_module.subprocess.run(
+            ("git", "update-index", clear_flag, "src/module.py"),
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert cleared.returncode == 0, cleared.stderr
+        tracked.write_bytes(original)
 
 
 def test_dependency_direct_url_identity_branches(tmp_path, monkeypatch):
