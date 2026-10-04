@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import importlib.metadata
 import json
+import sys
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -211,6 +215,30 @@ def test_loader_rejects_malformed_envelopes_and_evidence(tmp_path):
         scenario_module.load_dividend_scenario(malformed)
 
 
+def test_lifecycle_source_record_hash_binds_normalized_qdk_record(tmp_path):
+    *_, base, _ = loaded_scenario(tmp_path)
+    lifecycle_record = base["lifecycles"][0]
+    assert scenario_module.load_dividend_scenario(base).lifecycles[0].source_record_sha256 == (
+        scenario_module.DividendLifecycle.from_dict(lifecycle_record["lifecycle"]).fingerprint()
+    )
+
+    reordered = copy.deepcopy(base)
+    original = reordered["lifecycles"][0]["lifecycle"]
+    reordered["lifecycles"][0]["lifecycle"] = dict(reversed(list(original.items())))
+    scenario_module.load_dividend_scenario(reordered)
+
+    for wrong_hash in ("0" * 64, "f" * 64):
+        malformed = copy.deepcopy(base)
+        malformed["lifecycles"][0]["source_record_sha256"] = wrong_hash
+        with pytest.raises(ScenarioValidationError, match="SOURCE_RECORD_HASH_MISMATCH"):
+            scenario_module.load_dividend_scenario(malformed)
+
+    changed = copy.deepcopy(base)
+    changed["lifecycles"][0]["lifecycle"]["instrument_id"] = "00700"
+    with pytest.raises(ScenarioValidationError, match="SOURCE_RECORD_HASH_MISMATCH"):
+        scenario_module.load_dividend_scenario(changed)
+
+
 def test_identity_validation_rejects_cross_record_conflicts(tmp_path):
     _, _, _, _, payment_at, as_of, _, base, loaded = loaded_scenario(tmp_path)
 
@@ -413,6 +441,31 @@ def test_payment_status_identity_and_serialization_branches(tmp_path):
     with pytest.raises(ScenarioValidationError, match="IDENTITY_MISMATCH"):
         scenario_module.load_dividend_scenario(unknown)
 
+    paid_value = lifecycle(
+        case=case,
+        ex_at=ex_at,
+        conversion_at=conversion_at,
+        payment_at=as_of - timedelta(hours=1),
+    )
+    contradictory = scenario_payload(
+        case,
+        paid_value,
+        ex_at=ex_at,
+        as_of=as_of,
+        payment_status=[{**status, "dividend_id": paid_value.dividend_id}],
+    )
+    with pytest.raises(ScenarioValidationError, match="PAYMENT_FACT_CONTRADICTION"):
+        scenario_module.load_dividend_scenario(contradictory)
+
+    for conflicting_id in (
+        open_value.entitlement.evidence.event_id,
+        base["basis_evidence"][0]["evidence_id"],
+    ):
+        collision = copy.deepcopy(base)
+        collision["payment_status"][0]["evidence_id"] = conflicting_id
+        with pytest.raises(ScenarioValidationError, match="DUPLICATE_EVENT_ID"):
+            scenario_module.load_dividend_scenario(collision)
+
 
 def test_timeline_guards_and_skipped_future_phases(tmp_path):
     case, sessions, ex_at, _, _, as_of, _, _, loaded = loaded_scenario(tmp_path)
@@ -512,7 +565,7 @@ def test_timeline_guards_and_skipped_future_phases(tmp_path):
 
 
 def test_same_instant_order_unknown_and_duplicate_internal_edge(tmp_path):
-    case, sessions, _, _, _, _, _, _, loaded = loaded_scenario(tmp_path)
+    case, sessions, ex_at, _, _, _, value, _, loaded = loaded_scenario(tmp_path)
     opening = sessions.iloc[0].open.to_pydatetime()
     session_date = str(sessions.iloc[0].date.date())
     unknown = scenario_module.SameInstantOrder(
@@ -539,6 +592,40 @@ def test_same_instant_order_unknown_and_duplicate_internal_edge(tmp_path):
         replace(loaded, same_instant_order=(duplicate_internal,)),
     )
     assert timeline[0].kind == "open_marks"
+
+    singleton_unknown = replace(
+        unknown,
+        timestamp=ex_at,
+        before_event_id=value.entitlement.evidence.event_id,
+        after_event_id="missing-at-singleton",
+        evidence_id="singleton-unknown",
+    )
+    with pytest.raises(ScenarioValidationError, match="unknown event"):
+        scenario_module.build_scenario_timeline(
+            case.calendar,
+            case.config,
+            replace(loaded, same_instant_order=(singleton_unknown,)),
+        )
+
+    wrong_group = replace(
+        singleton_unknown,
+        after_event_id=value.election.evidence.event_id,
+        evidence_id="cross-time-group",
+    )
+    with pytest.raises(ScenarioValidationError, match="does not bind one time group"):
+        scenario_module.build_scenario_timeline(
+            case.calendar,
+            case.config,
+            replace(loaded, same_instant_order=(wrong_group,)),
+        )
+
+    duplicate_edge = replace(duplicate_internal, evidence_id="same-edge-second-proof")
+    with pytest.raises(ScenarioValidationError, match="duplicate ordering evidence"):
+        scenario_module.build_scenario_timeline(
+            case.calendar,
+            case.config,
+            replace(loaded, same_instant_order=(duplicate_internal, duplicate_edge)),
+        )
 
 
 def test_dependency_identity_fail_closed_branches(tmp_path, monkeypatch):
@@ -570,37 +657,154 @@ def test_dependency_identity_fail_closed_branches(tmp_path, monkeypatch):
     monkeypatch.setattr(scenario_module.subprocess, "run", lambda *args, **kwargs: next(responses))
     assert scenario_module._git_identity(git_root, "dependency") == "abc"
 
+    responses = iter(
+        [
+            SimpleNamespace(returncode=0, stdout="abc\n"),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=1, stdout=""),
+            SimpleNamespace(returncode=0, stdout=""),
+        ]
+    )
+    monkeypatch.setattr(scenario_module.subprocess, "run", lambda *args, **kwargs: next(responses))
+    with pytest.raises(ScenarioValidationError, match="not clean tracked HEAD files"):
+        scenario_module._git_identity(git_root, "dependency", (Path("ignored/module.py"),))
+    responses = iter(
+        [
+            SimpleNamespace(returncode=0, stdout="abc\n"),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout="ignored/module.py\n"),
+            SimpleNamespace(returncode=0, stdout=""),
+        ]
+    )
+    monkeypatch.setattr(scenario_module.subprocess, "run", lambda *args, **kwargs: next(responses))
+    assert (
+        scenario_module._git_identity(git_root, "dependency", (Path("ignored/module.py"),)) == "abc"
+    )
+
+
+def test_editable_identity_rejects_gitignored_import_copy(tmp_path):
+    root = tmp_path / "editable-repository"
+    tracked = root / "src" / "module.py"
+    ignored = root / "build" / "lib" / "module.py"
+    tracked.parent.mkdir(parents=True)
+    ignored.parent.mkdir(parents=True)
+    (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+    tracked.write_text("VALUE = 'tracked'\n", encoding="utf-8")
+    ignored.write_text("VALUE = 'ignored-copy'\n", encoding="utf-8")
+    commands = (
+        ("git", "init"),
+        ("git", "add", ".gitignore", "src/module.py"),
+        (
+            "git",
+            "-c",
+            "user.name=Scenario Test",
+            "-c",
+            "user.email=scenario@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ),
+    )
+    for command in commands:
+        completed = scenario_module.subprocess.run(
+            command, cwd=root, capture_output=True, text=True, check=False
+        )
+        assert completed.returncode == 0, completed.stderr
+    status = scenario_module.subprocess.run(
+        ("git", "status", "--porcelain"),
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status.stdout == ""
+
+    tracked_files = scenario_module._verify_editable_files(
+        "dependency", root, {"module": (tracked, "module.py")}
+    )
+    assert scenario_module._git_identity(root, "dependency", tracked_files)
+    ignored_files = scenario_module._verify_editable_files(
+        "dependency", root, {"module": (ignored, "module.py")}
+    )
+    with pytest.raises(ScenarioValidationError, match="not clean tracked HEAD files"):
+        scenario_module._git_identity(root, "dependency", ignored_files)
+
 
 def test_dependency_direct_url_identity_branches(tmp_path, monkeypatch):
     root = tmp_path / "distribution"
     root.mkdir()
-    inside = root / "package.py"
+    inside = root / "module.py"
     inside.write_text("", encoding="utf-8")
     outside = tmp_path / "outside.py"
     outside.write_text("", encoding="utf-8")
 
+    class Record:
+        def __init__(self, path, record_hash=None):
+            self.path = path
+            self.hash = record_hash
+
+        def __str__(self):
+            return self.path
+
     class Distribution:
-        def __init__(self, payload):
+        def __init__(
+            self,
+            payload,
+            *,
+            records=None,
+            metadata_name="dependency",
+            top_level="module\n",
+        ):
             self.payload = payload
+            self.files = list(records if records is not None else (Record("module.py"),))
+            self.metadata = {"Name": metadata_name}
+            self.top_level = top_level
 
         def read_text(self, name):
-            assert name == "direct_url.json"
-            return self.payload
+            if name == "direct_url.json":
+                return self.payload
+            if name == "top_level.txt":
+                return self.top_level
+            raise AssertionError(name)
 
         def locate_file(self, name):
-            assert name == ""
-            return root
+            return root / str(name)
 
-    def configure(payload, module_path=inside):
+    def configure(
+        payload,
+        module_path=inside,
+        *,
+        spec_name="module",
+        spec_origin=None,
+        module_package="",
+        records=None,
+        metadata_name="dependency",
+        top_level="module\n",
+    ):
         monkeypatch.setattr(
             scenario_module.importlib.metadata,
             "distribution",
-            lambda name: Distribution(payload),
+            lambda name: Distribution(
+                payload,
+                records=records,
+                metadata_name=metadata_name,
+                top_level=top_level,
+            ),
         )
+        origin = str(module_path) if spec_origin is None else spec_origin
         monkeypatch.setattr(
             scenario_module.importlib,
             "import_module",
-            lambda name: SimpleNamespace(__file__=str(module_path)),
+            lambda name: SimpleNamespace(
+                __name__="module",
+                __file__=str(module_path),
+                __package__=module_package,
+                __spec__=SimpleNamespace(
+                    name=spec_name,
+                    origin=origin,
+                    submodule_search_locations=None,
+                ),
+            ),
         )
 
     def missing(name):
@@ -612,20 +816,147 @@ def test_dependency_direct_url_identity_branches(tmp_path, monkeypatch):
     configure(None)
     with pytest.raises(ScenarioValidationError, match="direct_url.json is missing"):
         scenario_module._dependency_commit("dependency", "module")
+    configure("{}", metadata_name="other")
+    with pytest.raises(ScenarioValidationError, match="distribution name does not match"):
+        scenario_module._dependency_commit("dependency", "module")
+    configure("{}", top_level="other\n")
+    with pytest.raises(ScenarioValidationError, match="top-level package metadata does not match"):
+        scenario_module._dependency_commit("dependency", "module")
+    configure("not-json")
+    with pytest.raises(ScenarioValidationError, match="direct_url.json is invalid"):
+        scenario_module._dependency_commit("dependency", "module")
     configure(json.dumps({"vcs_info": {"commit_id": "abc"}}))
     assert scenario_module._dependency_commit("dependency", "module") == "abc"
+    configure(json.dumps({"vcs_info": {"commit_id": "abc"}}), spec_name="other")
+    with pytest.raises(ScenarioValidationError, match="invalid module identity"):
+        scenario_module._dependency_commit("dependency", "module")
+    configure(json.dumps({"vcs_info": {"commit_id": "abc"}}), spec_origin=str(outside))
+    with pytest.raises(ScenarioValidationError, match="invalid module origin"):
+        scenario_module._dependency_commit("dependency", "module")
+    configure(json.dumps({"vcs_info": {"commit_id": "abc"}}), module_package="wrong")
+    with pytest.raises(ScenarioValidationError, match="invalid package identity"):
+        scenario_module._dependency_commit("dependency", "module")
     configure(json.dumps({"vcs_info": {"commit_id": "abc"}}), outside)
-    with pytest.raises(ScenarioValidationError, match="outside"):
+    with pytest.raises(ScenarioValidationError, match="invalid source path"):
+        scenario_module._dependency_commit("dependency", "module")
+    configure(
+        json.dumps({"vcs_info": {"commit_id": "abc"}}),
+        records=(Record("other.py"),),
+    )
+    with pytest.raises(ScenarioValidationError, match="lacks unique RECORD ownership"):
+        scenario_module._dependency_commit("dependency", "module")
+    configure(json.dumps({"vcs_info": {"commit_id": "abc"}}), records=())
+    with pytest.raises(ScenarioValidationError, match="distribution RECORD is missing"):
+        scenario_module._dependency_commit("dependency", "module")
+    digest = base64.urlsafe_b64encode(hashlib.sha256(inside.read_bytes()).digest()).rstrip(b"=")
+    good_hash = SimpleNamespace(mode="sha256", value=digest.decode("ascii"))
+    configure(
+        json.dumps({"vcs_info": {"commit_id": "abc"}}),
+        records=(Record("module.py", good_hash),),
+    )
+    assert scenario_module._dependency_commit("dependency", "module") == "abc"
+    configure(
+        json.dumps({"vcs_info": {"commit_id": "abc"}}),
+        records=(Record("module.py", SimpleNamespace(mode="sha256", value="wrong")),),
+    )
+    with pytest.raises(ScenarioValidationError, match="differs from its RECORD hash"):
+        scenario_module._dependency_commit("dependency", "module")
+    configure(
+        json.dumps({"vcs_info": {"commit_id": "abc"}}),
+        records=(Record("module.py", SimpleNamespace(mode="unknown", value="wrong")),),
+    )
+    with pytest.raises(ScenarioValidationError, match="unsupported RECORD hash"):
         scenario_module._dependency_commit("dependency", "module")
     configure(json.dumps({"url": root.as_uri(), "dir_info": {"editable": True}}), inside)
-    monkeypatch.setattr(scenario_module, "_git_identity", lambda path, name: "editable-head")
+    monkeypatch.setattr(
+        scenario_module, "_git_identity", lambda path, name, source_files=(): "editable-head"
+    )
     assert scenario_module._dependency_commit("dependency", "module") == "editable-head"
     configure(json.dumps({"url": root.as_uri(), "dir_info": {"editable": True}}), outside)
-    with pytest.raises(ScenarioValidationError, match="outside editable root"):
+    with pytest.raises(ScenarioValidationError, match="invalid source path"):
         scenario_module._dependency_commit("dependency", "module")
     configure(json.dumps({"url": root.as_uri()}), inside)
     with pytest.raises(ScenarioValidationError, match="verifiable VCS identity"):
         scenario_module._dependency_commit("dependency", "module")
+
+    other_root = tmp_path / "other-root"
+    other_root.mkdir()
+    outside_module = other_root / "module.py"
+    outside_module.write_text("", encoding="utf-8")
+    with pytest.raises(ScenarioValidationError, match="outside editable root"):
+        scenario_module._verify_editable_files(
+            "dependency", root, {"module": (outside_module, "module.py")}
+        )
+    wrong_path = root / "wrong.py"
+    wrong_path.write_text("", encoding="utf-8")
+    with pytest.raises(ScenarioValidationError, match="invalid editable source path"):
+        scenario_module._verify_editable_files(
+            "dependency", root, {"module": (wrong_path, "module.py")}
+        )
+    first = root / "first" / "module.py"
+    second = root / "second" / "other.py"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("", encoding="utf-8")
+    second.write_text("", encoding="utf-8")
+    with pytest.raises(ScenarioValidationError, match="different source roots"):
+        scenario_module._verify_editable_files(
+            "dependency",
+            root,
+            {
+                "module": (first, "module.py"),
+                "other": (second, "other.py"),
+            },
+        )
+
+
+def test_dependency_api_probe_rejects_import_and_symbol_identity(monkeypatch):
+    def import_failure(name):
+        raise ImportError(name)
+
+    monkeypatch.setattr(scenario_module.importlib, "import_module", import_failure)
+    with pytest.raises(ScenarioValidationError, match="cannot import"):
+        scenario_module._module_file("dependency", "module")
+
+    monkeypatch.setattr(
+        scenario_module,
+        "DEPENDENCY_API_PROBES",
+        {"dependency": (("module", "required_api", "module.impl"),)},
+    )
+    monkeypatch.setattr(scenario_module, "_module_file", lambda name, module: (Path(), "module.py"))
+    monkeypatch.setattr(
+        scenario_module.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(__name__=name),
+    )
+    with pytest.raises(ScenarioValidationError, match="lacks required API"):
+        scenario_module._dependency_probe_files("dependency", "module")
+
+    monkeypatch.setattr(
+        scenario_module.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(
+            __name__=name,
+            required_api=SimpleNamespace(__module__="wrong.module"),
+        ),
+    )
+    with pytest.raises(ScenarioValidationError, match="invalid API origin"):
+        scenario_module._dependency_probe_files("dependency", "module")
+
+
+def test_dependency_api_origin_and_real_distribution_identity(monkeypatch):
+    real_import_module = importlib.import_module
+    quant_data_kit = real_import_module("quant_data_kit")
+    monkeypatch.setitem(sys.modules, "quant_execution", quant_data_kit)
+    with pytest.raises(ScenarioValidationError, match="invalid module identity"):
+        scenario_module._dependency_commit("quant-execution", "quant_execution")
+
+    monkeypatch.undo()
+    for name, module_name in scenario_module.DEPENDENCY_MODULES.items():
+        assert (
+            scenario_module._dependency_commit(name, module_name)
+            == scenario_module.DEPENDENCY_COMMITS[name]
+        )
 
 
 def test_stack_lock_requires_exact_runtime_commits(monkeypatch):

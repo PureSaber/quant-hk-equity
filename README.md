@@ -23,7 +23,7 @@ quant-hk run --config configs/baseline.json --snapshot data/hk-snapshot --output
 
 ### 软件分红场景
 
-分红场景使用独立的`stack.dividend-scenario.lock`，默认研究环境及`stack.lock`保持冻结。必须在新虚拟环境安装场景栈；运行时会核对四个共享包的真实加载路径、Git提交和干净状态，无法证明依赖身份时失败关闭。
+分红场景使用独立的`stack.dividend-scenario.lock`，默认研究环境及`stack.lock`保持冻结。必须在新虚拟环境安装场景栈；运行时会把实际导入的关键API绑定到对应分发的RECORD文件、可用文件摘要和Git提交；editable安装还要求导入文件属于干净HEAD中的跟踪文件。无法证明依赖身份时失败关闭。
 
 ```sh
 python -m pip install -r requirements.lock
@@ -36,7 +36,7 @@ quant-hk dividend-scenario \
   --output outputs/dividend-scenario
 ```
 
-`quant-hk-dividend-scenario/v1`输入绑定研究配置和快照清单SHA-256，并显式提供`as_of`、QDK`DividendLifecycle`、权益日持仓依据、PIT汇率、到期未到账证据及同刻事件顺序。权益证据必须在除权时点可得；账户在首个留出期开盘建立，因此更早的权益不作历史回填。支付已到期但没有实际付款记录时，必须提供精确绑定账户、分红和`as_of`的`not_received`证据。
+`quant-hk-dividend-scenario/v1`输入绑定研究配置和快照清单SHA-256，并显式提供`as_of`、QDK`DividendLifecycle`、权益日持仓依据、PIT汇率、到期未到账证据及同刻事件顺序。`source_record_sha256`必须等于该生命周期规范化QDK记录的`fingerprint()`，用于发现输入记录改变；`source_reference`只归档调用方提供的外部定位，不验证公告真实性或发布时间。权益证据必须在除权时点可得；账户在首个留出期开盘建立，因此更早的权益不作历史回填。支付已到期但没有实际付款记录时，必须提供精确绑定账户、分红和`as_of`的`not_received`证据；它不能与同一账户和分红的实际到账事实并存。
 
 候选选择只读取原始价格训练期，按训练期Sharpe最高且名称字典序打破平局。分红与留出期价格不能改变选择。随后以全局UTC时间线交织开收盘估值、调仓、T+2交收、分红三阶段和PIT汇率；外币分红进入对应币种资产，不自动成为可交易HKD。
 

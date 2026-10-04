@@ -1,12 +1,18 @@
-"""Software-only HK dividend scenarios with evidenced timing and replay."""
+"""Software-only HK dividend scenarios with evidenced timing and replay.
+
+The lifecycle fingerprint proves normalized input-record integrity. Its opaque
+source reference is archived as supplied and does not certify an external notice.
+"""
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import importlib
 import importlib.metadata
 import json
+import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -65,6 +71,32 @@ DEPENDENCY_MODULES = {
     "quant-data-kit": "quant_data_kit",
     "quant-factors": "quant_factors",
     "quant-lab": "quant_lab",
+}
+DEPENDENCY_API_PROBES = {
+    "quant-execution": (
+        ("quant_execution", "DividendExecutionRequest", "quant_execution.dividends"),
+        ("quant_execution", "export_dividend_run", "quant_execution.artifacts"),
+        ("quant_execution.hong_kong", "HKDailyExecution", "quant_execution.hong_kong"),
+    ),
+    "quant-data-kit": (
+        ("quant_data_kit", "InstrumentSpec", "quant_data_kit.domain_v2"),
+        (
+            "quant_data_kit.financial",
+            "DividendLifecycle",
+            "quant_data_kit.financial.dividends",
+        ),
+        ("quant_data_kit.financial", "PitFxRate", "quant_data_kit.financial.fx"),
+        ("quant_data_kit.hong_kong", "load_hk_snapshot", "quant_data_kit.hong_kong"),
+    ),
+    "quant-factors": (("quant_factors", "compute_factors", "quant_factors.core"),),
+    "quant-lab": (
+        ("quant_lab.contracts", "write_standard_run", "quant_lab.contracts"),
+        (
+            "quant_lab.research_v2",
+            "write_exploratory_run_v2",
+            "quant_lab.research_v2",
+        ),
+    ),
 }
 
 
@@ -491,10 +523,13 @@ def load_dividend_scenario(value: object) -> HKDividendScenarioInput:
             lifecycle = DividendLifecycle.from_dict(item["lifecycle"])
         except (TypeError, ValueError) as exc:
             raise ScenarioValidationError("LIFECYCLE_INVALID", str(exc)) from exc
+        source_record_sha256 = _hash(item["source_record_sha256"], "source_record_sha256")
+        if source_record_sha256 != lifecycle.fingerprint():
+            raise ScenarioValidationError("SOURCE_RECORD_HASH_MISMATCH", lifecycle.dividend_id)
         envelopes.append(
             LifecycleEnvelope(
                 lifecycle=lifecycle,
-                source_record_sha256=_hash(item["source_record_sha256"], "source_record_sha256"),
+                source_record_sha256=source_record_sha256,
                 source_reference=_text(item["source_reference"], "source_reference"),
             )
         )
@@ -544,7 +579,7 @@ def _validate_scenario_identities(scenario: HKDividendScenarioInput) -> None:
         raise ScenarioValidationError(
             "ENTITLEMENT_BASIS_IDENTITY_MISMATCH", "one basis is required per lifecycle"
         )
-    event_ids: list[str] = []
+    evidence_ids: list[str] = []
     for lifecycle in lifecycle_by_id.values():
         basis = basis_by_id[lifecycle.dividend_id]
         if basis.instrument_id != lifecycle.instrument_id:
@@ -554,7 +589,7 @@ def _validate_scenario_identities(scenario: HKDividendScenarioInput) -> None:
         for fact in _all_lifecycle_facts(lifecycle):
             evidence = getattr(fact, "evidence", None)
             if evidence is not None:
-                event_ids.append(evidence.event_id)
+                evidence_ids.append(evidence.event_id)
                 if utc(evidence.timing.available_at).to_pydatetime() > scenario.as_of:
                     raise ScenarioValidationError("FACT_NOT_KNOWN_AS_OF", evidence.event_id)
         policy = lifecycle.payment_policy
@@ -583,21 +618,31 @@ def _validate_scenario_identities(scenario: HKDividendScenarioInput) -> None:
                         "PAYMENT_PREREQUISITE_NOT_EFFECTIVE",
                         fact.evidence.event_id,
                     )
-    event_ids.extend(rate.event_id for rate in scenario.pit_fx)
-    if len(event_ids) != len(set(event_ids)):
-        raise ScenarioValidationError("DUPLICATE_EVENT_ID", "external event IDs must be global")
+    evidence_ids.extend(rate.event_id for rate in scenario.pit_fx)
+    evidence_ids.extend(item.evidence_id for item in scenario.basis_evidence)
+    evidence_ids.extend(item.evidence_id for item in scenario.payment_status)
+    evidence_ids.extend(item.evidence_id for item in scenario.same_instant_order)
+    if len(evidence_ids) != len(set(evidence_ids)):
+        raise ScenarioValidationError("DUPLICATE_EVENT_ID", "scenario evidence IDs must be global")
     if any(utc(rate.available_at).to_pydatetime() > scenario.as_of for rate in scenario.pit_fx):
         raise ScenarioValidationError("FACT_NOT_KNOWN_AS_OF", "PIT FX after as_of")
-    status_ids = [item.evidence_id for item in scenario.payment_status]
     status_dividends = [item.dividend_id for item in scenario.payment_status]
-    if len(status_ids) != len(set(status_ids)) or len(status_dividends) != len(
-        set(status_dividends)
-    ):
+    if len(status_dividends) != len(set(status_dividends)):
         raise ScenarioValidationError("DUPLICATE_EVENT_ID", "duplicate payment status")
     if not set(status_dividends) <= set(lifecycle_by_id):
         raise ScenarioValidationError("IDENTITY_MISMATCH", "unknown payment status dividend")
     statuses = {item.dividend_id: item for item in scenario.payment_status}
     for lifecycle in lifecycle_by_id.values():
+        status = statuses.get(lifecycle.dividend_id)
+        if (
+            lifecycle.payment is not None
+            and status is not None
+            and lifecycle.payment.account_id == status.account_id
+        ):
+            raise ScenarioValidationError(
+                "PAYMENT_FACT_CONTRADICTION",
+                f"{lifecycle.dividend_id} is both received and not_received",
+            )
         scheduled = date.fromisoformat(lifecycle.entitlement.scheduled_payment_date)
         if (
             lifecycle.payment is None
@@ -759,6 +804,37 @@ def _unique_group_order(
     return ordered
 
 
+def _validate_explicit_orders(
+    events: list[TimelineEvent], explicit: tuple[SameInstantOrder, ...]
+) -> None:
+    evidence_ids = [item.evidence_id for item in explicit]
+    if len(evidence_ids) != len(set(evidence_ids)):
+        raise ScenarioValidationError("DUPLICATE_EVENT_ID", "duplicate ordering evidence ID")
+    edge_keys = [(item.timestamp, item.before_event_id, item.after_event_id) for item in explicit]
+    if len(edge_keys) != len(set(edge_keys)):
+        raise ScenarioValidationError("AMBIGUOUS_EVENT_ORDER", "duplicate ordering evidence")
+    by_id = {item.event_id: item for item in events}
+    if set(evidence_ids) & set(by_id):
+        raise ScenarioValidationError(
+            "DUPLICATE_EVENT_ID", "ordering evidence IDs must be globally unique"
+        )
+    for order in explicit:
+        if order.before_event_id == order.after_event_id:
+            raise ScenarioValidationError("AMBIGUOUS_EVENT_ORDER", "self edge is invalid")
+        before = by_id.get(order.before_event_id)
+        after = by_id.get(order.after_event_id)
+        if before is None or after is None:
+            raise ScenarioValidationError(
+                "AMBIGUOUS_EVENT_ORDER",
+                f"ordering evidence {order.evidence_id} has unknown event",
+            )
+        if before.event_time != order.timestamp or after.event_time != order.timestamp:
+            raise ScenarioValidationError(
+                "AMBIGUOUS_EVENT_ORDER",
+                f"ordering evidence {order.evidence_id} does not bind one time group",
+            )
+
+
 def build_scenario_timeline(
     calendar: pd.DataFrame,
     config: Mapping[str, Any],
@@ -841,14 +917,10 @@ def build_scenario_timeline(
     identifiers = [item.event_id for item in events]
     if len(identifiers) != len(set(identifiers)):
         raise ScenarioValidationError("DUPLICATE_EVENT_ID", "timeline event IDs collide")
+    _validate_explicit_orders(events, scenario.same_instant_order)
     groups: dict[datetime, list[TimelineEvent]] = {}
     for event in events:
         groups.setdefault(event.event_time, []).append(event)
-    evidence_times = {item.timestamp for item in scenario.same_instant_order}
-    if not evidence_times <= set(groups):
-        raise ScenarioValidationError(
-            "AMBIGUOUS_EVENT_ORDER", "ordering evidence timestamp has no events"
-        )
     ordered: list[TimelineEvent] = []
     for event_time in sorted(groups):
         group = groups[event_time]
@@ -1526,7 +1598,7 @@ def _path_from_file_url(value: str) -> Path:
     return Path(raw).resolve()
 
 
-def _git_identity(root: Path, name: str) -> str:
+def _git_identity(root: Path, name: str, source_files: tuple[Path, ...] = ()) -> str:
     if not (root / ".git").exists():
         raise ScenarioValidationError(
             "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} editable root lacks .git"
@@ -1549,7 +1621,168 @@ def _git_identity(root: Path, name: str) -> str:
         raise ScenarioValidationError(
             "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} editable source is missing or dirty"
         )
+    if source_files:
+        relative_files = [path.as_posix() for path in source_files]
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", *relative_files],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        unchanged = subprocess.run(
+            ["git", "diff", "--quiet", "HEAD", "--", *relative_files],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if tracked.returncode or unchanged.returncode:
+            raise ScenarioValidationError(
+                "DEPENDENCY_IDENTITY_UNVERIFIED",
+                f"{name} imported editable files are not clean tracked HEAD files",
+            )
     return head.stdout.strip()
+
+
+def _normalized_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def _module_file(name: str, module_name: str) -> tuple[Path, str]:
+    try:
+        module = importlib.import_module(module_name)
+    except (ImportError, AttributeError) as exc:
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} cannot import {module_name}"
+        ) from exc
+    spec = getattr(module, "__spec__", None)
+    module_file = getattr(module, "__file__", None)
+    origin = getattr(spec, "origin", None)
+    if (
+        getattr(module, "__name__", None) != module_name
+        or spec is None
+        or getattr(spec, "name", None) != module_name
+        or not isinstance(module_file, str)
+        or not isinstance(origin, str)
+    ):
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED",
+            f"{name} has invalid module identity for {module_name}",
+        )
+    source_path = Path(module_file).resolve()
+    if source_path != Path(origin).resolve() or not source_path.is_file():
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} has invalid module origin for {module_name}"
+        )
+    is_package = getattr(spec, "submodule_search_locations", None) is not None
+    expected_package = module_name if is_package else module_name.rpartition(".")[0]
+    if getattr(module, "__package__", None) != expected_package:
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED",
+            f"{name} has invalid package identity for {module_name}",
+        )
+    parts = module_name.split(".")
+    expected_record = "/".join(parts + ["__init__.py"]) if is_package else "/".join(parts) + ".py"
+    expected_parts = tuple(expected_record.split("/"))
+    if source_path.parts[-len(expected_parts) :] != expected_parts:
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} has invalid source path for {module_name}"
+        )
+    return source_path, expected_record
+
+
+def _dependency_probe_files(name: str, module_name: str) -> dict[str, tuple[Path, str]]:
+    modules = {module_name}
+    for access_module_name, symbol_name, declared_module_name in DEPENDENCY_API_PROBES.get(
+        name, ()
+    ):
+        _module_file(name, access_module_name)
+        modules.add(access_module_name)
+        access_module = importlib.import_module(access_module_name)
+        try:
+            symbol = getattr(access_module, symbol_name)
+        except AttributeError as exc:
+            raise ScenarioValidationError(
+                "DEPENDENCY_IDENTITY_UNVERIFIED",
+                f"{name} lacks required API {access_module_name}.{symbol_name}",
+            ) from exc
+        if getattr(symbol, "__module__", None) != declared_module_name:
+            raise ScenarioValidationError(
+                "DEPENDENCY_IDENTITY_UNVERIFIED",
+                f"{name} has invalid API origin for {access_module_name}.{symbol_name}",
+            )
+        modules.add(declared_module_name)
+    return {item: _module_file(name, item) for item in sorted(modules)}
+
+
+def _verify_record_files(
+    name: str,
+    distribution: importlib.metadata.Distribution,
+    probe_files: Mapping[str, tuple[Path, str]],
+) -> None:
+    records = distribution.files
+    if not records:
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} distribution RECORD is missing"
+        )
+    for module_name, (module_path, expected_record) in probe_files.items():
+        matches = [
+            record
+            for record in records
+            if Path(distribution.locate_file(record)).resolve() == module_path
+        ]
+        if len(matches) != 1 or str(matches[0]).replace("\\", "/") != expected_record:
+            raise ScenarioValidationError(
+                "DEPENDENCY_IDENTITY_UNVERIFIED",
+                f"{name} module {module_name} lacks unique RECORD ownership",
+            )
+        record_hash = getattr(matches[0], "hash", None)
+        if record_hash is None:
+            continue
+        mode = getattr(record_hash, "mode", None)
+        expected_digest = getattr(record_hash, "value", None)
+        try:
+            digest = hashlib.new(mode, module_path.read_bytes()).digest()
+        except (TypeError, ValueError) as exc:
+            raise ScenarioValidationError(
+                "DEPENDENCY_IDENTITY_UNVERIFIED",
+                f"{name} module {module_name} has an unsupported RECORD hash",
+            ) from exc
+        actual_digest = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        if not isinstance(expected_digest, str) or actual_digest != expected_digest:
+            raise ScenarioValidationError(
+                "DEPENDENCY_IDENTITY_UNVERIFIED",
+                f"{name} module {module_name} differs from its RECORD hash",
+            )
+
+
+def _verify_editable_files(
+    name: str, root: Path, probe_files: Mapping[str, tuple[Path, str]]
+) -> tuple[Path, ...]:
+    import_prefixes = set()
+    relative_files = []
+    for module_name, (module_path, expected_record) in probe_files.items():
+        try:
+            relative = module_path.relative_to(root)
+        except ValueError as exc:
+            raise ScenarioValidationError(
+                "DEPENDENCY_IDENTITY_UNVERIFIED",
+                f"{name} module {module_name} is outside editable root {root}",
+            ) from exc
+        expected_parts = tuple(expected_record.split("/"))
+        if relative.parts[-len(expected_parts) :] != expected_parts:
+            raise ScenarioValidationError(
+                "DEPENDENCY_IDENTITY_UNVERIFIED",
+                f"{name} module {module_name} has invalid editable source path",
+            )
+        import_prefixes.add(relative.parts[: -len(expected_parts)])
+        relative_files.append(relative)
+    if len(import_prefixes) != 1:
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} editable modules use different source roots"
+        )
+    return tuple(relative_files)
 
 
 def _dependency_commit(name: str, module_name: str) -> str:
@@ -1559,30 +1792,39 @@ def _dependency_commit(name: str, module_name: str) -> str:
         raise ScenarioValidationError(
             "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} distribution metadata is missing"
         ) from exc
+    metadata_name = distribution.metadata.get("Name")
+    if not isinstance(metadata_name, str) or _normalized_distribution_name(
+        metadata_name
+    ) != _normalized_distribution_name(name):
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} distribution name does not match"
+        )
+    top_level = distribution.read_text("top_level.txt")
+    expected_top_level = module_name.partition(".")[0]
+    if not top_level or expected_top_level not in top_level.splitlines():
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} top-level package metadata does not match"
+        )
     direct_text = distribution.read_text("direct_url.json")
     if not direct_text:
         raise ScenarioValidationError(
             "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} direct_url.json is missing"
         )
-    payload = json.loads(direct_text)
-    module_path = Path(importlib.import_module(module_name).__file__).resolve()
+    try:
+        payload = json.loads(direct_text)
+    except json.JSONDecodeError as exc:
+        raise ScenarioValidationError(
+            "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} direct_url.json is invalid"
+        ) from exc
+    probe_files = _dependency_probe_files(name, module_name)
     vcs = payload.get("vcs_info")
     if isinstance(vcs, Mapping) and isinstance(vcs.get("commit_id"), str):
-        distribution_root = Path(distribution.locate_file("")).resolve()
-        if not module_path.is_relative_to(distribution_root):
-            raise ScenarioValidationError(
-                "DEPENDENCY_IDENTITY_UNVERIFIED",
-                f"{name} imported from {module_path}, outside {distribution_root}",
-            )
+        _verify_record_files(name, distribution, probe_files)
         return vcs["commit_id"]
     if payload.get("dir_info", {}).get("editable") is True:
         root = _path_from_file_url(payload.get("url", ""))
-        if not module_path.is_relative_to(root):
-            raise ScenarioValidationError(
-                "DEPENDENCY_IDENTITY_UNVERIFIED",
-                f"{name} imported from {module_path}, outside editable root {root}",
-            )
-        return _git_identity(root, name)
+        source_files = _verify_editable_files(name, root, probe_files)
+        return _git_identity(root, name, source_files)
     raise ScenarioValidationError(
         "DEPENDENCY_IDENTITY_UNVERIFIED", f"{name} lacks a verifiable VCS identity"
     )
