@@ -24,3 +24,26 @@ jobs:
       - run: python -m ruff check src tests
       - run: python -m ruff format --check src tests
       - run: python -m pytest -q
+  dividend-scenario:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -r requirements.lock
+      - run: python -m pip install --no-deps -r stack.dividend-scenario.lock
+      - run: python -m pip install --no-deps -e .
+      - run: python -m pip check
+      - run: python -m ruff check src tests scenario_tests
+      - run: python -m ruff format --check src tests scenario_tests
+      - run: python -m pytest -q tests
+      - run: python -m pytest -q scenario_tests --cov=quant_hk_equity.dividend_scenario --cov-branch --cov-report=json:scenario-coverage.json
+      - name: Require 90 percent pure branch coverage
+        run: >-
+          python -c "import json; s=json.load(open('scenario-coverage.json', encoding='utf-8'))['files']['src/quant_hk_equity/dividend_scenario.py']['summary']; p=100*s['covered_branches']/s['num_branches']; print('pure branch coverage: {:.2f}% ({}/{})'.format(p, s['covered_branches'], s['num_branches'])); assert p >= 90"
