@@ -21,6 +21,27 @@ quant-hk run --config configs/baseline.json --snapshot data/hk-snapshot --output
 
 快照和结果目录必须不存在。重新研究使用新目录；重复使用原目录会失败，防止覆盖证据。供应商失败会留下失败清单，不能自动改源或填充价格。原始供应商返回、标准行情、日历和哈希保存在本地`data/`，不发布到GitHub。
 
+### 软件分红场景
+
+分红场景使用独立的`stack.dividend-scenario.lock`，默认研究环境及`stack.lock`保持冻结。必须在新虚拟环境安装场景栈；运行时会把实际导入的关键API绑定到对应分发的RECORD文件、可用文件摘要和Git提交；editable安装还要求导入文件属于干净HEAD中的跟踪文件，并把实际源码字节直接与HEAD blob比较，仅将Python源码的LF与CRLF换行视为等价。无法证明依赖身份时失败关闭。
+
+```sh
+python -m pip install -r requirements.lock
+python -m pip install --no-deps -r stack.dividend-scenario.lock
+python -m pip install --no-deps -e .
+quant-hk dividend-scenario \
+  --config configs/baseline.json \
+  --snapshot data/hk-snapshot \
+  --scenario inputs/dividend-scenario.json \
+  --output outputs/dividend-scenario
+```
+
+`quant-hk-dividend-scenario/v1`输入绑定研究配置和快照清单SHA-256，并显式提供`as_of`、QDK`DividendLifecycle`、权益日持仓依据、PIT汇率、到期未到账证据及同刻事件顺序。`source_record_sha256`必须等于该生命周期规范化QDK记录的`fingerprint()`，用于发现输入记录改变；`source_reference`只归档调用方提供的外部定位，不验证公告真实性或发布时间。权益证据必须在除权时点可得；账户在首个留出期开盘建立，因此更早的权益不作历史回填。支付已到期但没有实际付款记录时，必须提供精确绑定账户、分红和`as_of`的`not_received`证据；它不能与同一账户和分红的实际到账事实并存。
+
+候选选择只读取原始价格训练期，按训练期Sharpe最高且名称字典序打破平局。分红与留出期价格不能改变选择。随后以全局UTC时间线交织开收盘估值、调仓、T+2交收、分红三阶段和PIT汇率；外币分红进入对应币种资产，不自动成为可交易HKD。
+
+输出先发布可独立回放的QExec子产物，再写港股订单、成本、持仓、信号、日收益、时间线和执行状态，最后原子发布`scenario-manifest.json`。`validate_dividend_scenario_output(...)`从磁盘原始输入、配置、快照和QExec子产物重新执行，能拒绝连同旁车哈希一起篡改的结果。场景输出始终为`investable=false`、`rankable=false`、`market_admission_certified=false`；软件测试不代表真实公司行动数据认证。
+
 ## 实现与边界
 
 |组件|责任|
@@ -52,6 +73,11 @@ v2保留全部原始绩效，并通过`backtest_stats`提供累计收益、252�
 ```sh
 python -m ruff check src tests
 python -m pytest -q
+
+# 独立场景环境
+python -m ruff check src tests scenario_tests
+python -m pytest -q tests
+python -m pytest -q scenario_tests --cov=quant_hk_equity.dividend_scenario --cov-branch
 ```
 
 验证覆盖未来数据扰动不改变此前信号、交易日缺口、成本与现金约束、费用舍入、同日卖出、交收、幂等、账本平衡、冻结输入和训练/测试隔离。

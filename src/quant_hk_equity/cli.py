@@ -18,7 +18,24 @@ def main():
         item.add_argument("--snapshot", required=True, type=Path)
         if name == "run":
             item.add_argument("--output", required=True, type=Path)
+    scenario = sub.add_parser("dividend-scenario")
+    scenario.add_argument("--config", required=True, type=Path)
+    scenario.add_argument("--snapshot", required=True, type=Path)
+    scenario.add_argument("--scenario", required=True, type=Path)
+    scenario.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    if args.command == "dividend-scenario":
+        # Keep the new QExec surface out of the frozen default environment.
+        from quant_hk_equity.dividend_scenario import run_dividend_scenario_files
+
+        result = run_dividend_scenario_files(
+            snapshot=args.snapshot,
+            config_path=args.config,
+            scenario_path=args.scenario,
+            output=args.output,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     config = validate_config(json.loads(args.config.read_text(encoding="utf-8")))
     if args.command == "fetch":
         result = capture_hk_snapshot(
