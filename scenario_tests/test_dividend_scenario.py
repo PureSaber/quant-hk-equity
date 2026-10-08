@@ -60,6 +60,69 @@ def event_times(case):
     return sessions, ex_at, conversion_at, payment_at, as_of
 
 
+@pytest.mark.parametrize("offset,accepted", [(899, True), (900, True), (901, False)])
+def test_nanosecond_pit_fx_cutoff(tmp_path, offset, accepted):
+    case = create_case(tmp_path)
+    _, ex_at, conversion_at, payment_at, as_of = event_times(case)
+    value = lifecycle(case=case, ex_at=ex_at, conversion_at=conversion_at, payment_at=payment_at)
+    cutoff = pd.Timestamp(as_of) + pd.Timedelta(900, unit="ns")
+    rate_at = pd.Timestamp(as_of) + pd.Timedelta(offset, unit="ns")
+    payload = scenario_payload(
+        case,
+        value,
+        ex_at=ex_at,
+        as_of=cutoff,
+        pit_fx=[pit_fx(currency="USD", available_at=rate_at)],
+    )
+    if not accepted:
+        with pytest.raises(ScenarioValidationError, match="FACT_NOT_KNOWN_AS_OF"):
+            load_dividend_scenario(payload)
+        return
+    loaded = load_dividend_scenario(payload)
+    assert pd.Timestamp(loaded.as_of).value == cutoff.value
+    timeline = build_scenario_timeline(case.calendar, case.config, loaded)
+    actual = next(row.event_time for row in timeline if row.kind == "pit_fx")
+    assert pd.Timestamp(actual).value == rate_at.value
+
+
+def test_nanosecond_complete_scenario_replays(tmp_path):
+    case = create_case(tmp_path)
+    _, ex_at, conversion_at, payment_at, as_of = event_times(case)
+    ex_at = pd.Timestamp(ex_at) + pd.Timedelta(899, unit="ns")
+    conversion_at = pd.Timestamp(conversion_at) + pd.Timedelta(900, unit="ns")
+    payment_at = pd.Timestamp(payment_at) + pd.Timedelta(901, unit="ns")
+    value = lifecycle(case=case, ex_at=ex_at, conversion_at=conversion_at, payment_at=payment_at)
+    path = write_scenario(tmp_path, scenario_payload(case, value, ex_at=ex_at, as_of=as_of))
+    output = tmp_path / "output"
+    run_dividend_scenario_files(
+        snapshot=case.snapshot,
+        config_path=case.config_path,
+        scenario_path=path,
+        output=output,
+    )
+    records = [json.loads(line) for line in (output / "timeline.jsonl").read_text().splitlines()]
+    for kind, stamp in [
+        ("dividend_entitlement", ex_at),
+        ("issuer_conversion", conversion_at),
+        ("payment", payment_at),
+    ]:
+        row = next(row for row in records if row["kind"] == kind)
+        assert pd.Timestamp(row["qexec_record"]["applied_at"]).value == stamp.value
+    replayed = replay_dividend_run(output / "execution")
+    state = json.loads((output / "hk-execution-state.json").read_text())
+    assert state["journal_sha256"] == replayed.ledger.journal_sha256
+
+
+def test_subnanosecond_scenario_cutoff_rejected(tmp_path):
+    case = create_case(tmp_path)
+    _, ex_at, conversion_at, payment_at, as_of = event_times(case)
+    value = lifecycle(case=case, ex_at=ex_at, conversion_at=conversion_at, payment_at=payment_at)
+    payload = scenario_payload(case, value, ex_at=ex_at, as_of=as_of)
+    payload["as_of"] = iso(as_of).replace("Z", ".0000009001Z")
+    with pytest.raises(ScenarioValidationError, match="TIMING_UNRESOLVED"):
+        load_dividend_scenario(payload)
+
+
 def foreign_conversion_lifecycle(
     value,
     *,

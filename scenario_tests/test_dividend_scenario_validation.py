@@ -1015,7 +1015,7 @@ def test_stack_lock_requires_exact_runtime_commits(monkeypatch):
     with pytest.raises(ScenarioValidationError, match="scenario lock does not pin"):
         REAL_VERIFY_DEPENDENCY_STACK()
 
-    expected = "62a75a4bfacb445cc0809b8e1b283dbe4312050a"
+    expected = scenario_module.QEXEC_COMMIT
     monkeypatch.setattr(
         scenario_module,
         "DEPENDENCY_COMMITS",
