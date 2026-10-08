@@ -40,6 +40,8 @@ quant-hk dividend-scenario \
 
 候选选择只读取原始价格训练期，按训练期Sharpe最高且名称字典序打破平局。分红与留出期价格不能改变选择。随后以全局UTC时间线交织开收盘估值、调仓、T+2交收、分红三阶段和PIT汇率；外币分红进入对应币种资产，不自动成为可交易HKD。
 
+场景栈保留 UTC 纳秒时间，覆盖 JSON 输入、事实可得性、PIT 汇率、三阶段入账和执行回放；晚于观察时点 1 纳秒的数据也会被拒绝。细于纳秒的输入明确报错，不截断。默认日频研究的 `stack.lock` 不随场景栈升级。
+
 输出先发布可独立回放的QExec子产物，再写港股订单、成本、持仓、信号、日收益、时间线和执行状态，最后原子发布`scenario-manifest.json`。`validate_dividend_scenario_output(...)`从磁盘原始输入、配置、快照和QExec子产物重新执行，能拒绝连同旁车哈希一起篡改的结果。场景输出始终为`investable=false`、`rankable=false`、`market_admission_certified=false`；软件测试不代表真实公司行动数据认证。
 
 ## 实现与边界

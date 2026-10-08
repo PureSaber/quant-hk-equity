@@ -58,8 +58,8 @@ SCENARIO_SCHEMA = "quant-hk-dividend-scenario/v1"
 RESULT_SCHEMA = "quant-hk-dividend-scenario-result/v1"
 MANIFEST_SCHEMA = "quant-hk-dividend-scenario-manifest/v1"
 EXECUTION_STATE_SCHEMA = "quant-hk-dividend-execution-state/v1"
-QEXEC_COMMIT = "62a75a4bfacb445cc0809b8e1b283dbe4312050a"
-QDK_COMMIT = "fd788b2956a10490aa00c399b717ec796ae371b1"
+QEXEC_COMMIT = "b2ab4fc8c8705b7ae0a78991318880245a47b29d"
+QDK_COMMIT = "61b571bdb9bba5d0a8c3aff8b406864539d0a9fc"
 DEPENDENCY_COMMITS = {
     "quant-execution": QEXEC_COMMIT,
     "quant-data-kit": QDK_COMMIT,
@@ -288,14 +288,17 @@ def _time(value: object, field: str) -> datetime:
     if not isinstance(value, str):
         raise ScenarioValidationError("TIMING_UNRESOLVED", f"{field} must be an exact UTC time")
     try:
-        parsed = datetime.fromisoformat(value)
+        from quant_data_kit.temporal_v2 import parse_timestamp_exact
+
+        parsed = parse_timestamp_exact(value, field=field)
     except ValueError as exc:
         raise ScenarioValidationError(
             "TIMING_UNRESOLVED", f"{field} must be an ISO-8601 timestamp"
         ) from exc
     if parsed.tzinfo is None or parsed.utcoffset() != pd.Timedelta(0):
         raise ScenarioValidationError("TIMING_UNRESOLVED", f"{field} must use UTC")
-    return parsed.astimezone(UTC)
+    result = parsed.tz_convert("UTC")
+    return result if result.nanosecond else result.to_pydatetime()
 
 
 def _timestamp(value: datetime) -> str:
@@ -319,9 +322,7 @@ def _fact_times(fact: object) -> tuple[datetime, datetime]:
     evidence = getattr(fact, "evidence", None)
     if evidence is None:
         raise ScenarioValidationError("POLICY_EVIDENCE_MISSING", "phase fact lacks evidence")
-    return utc(evidence.timing.effective_at).to_pydatetime(), utc(
-        evidence.timing.available_at
-    ).to_pydatetime()
+    return utc(evidence.timing.effective_at), utc(evidence.timing.available_at)
 
 
 def _phase_facts(lifecycle: DividendLifecycle, phase: DividendExecutionPhase) -> list[object]:
@@ -590,7 +591,7 @@ def _validate_scenario_identities(scenario: HKDividendScenarioInput) -> None:
             evidence = getattr(fact, "evidence", None)
             if evidence is not None:
                 evidence_ids.append(evidence.event_id)
-                if utc(evidence.timing.available_at).to_pydatetime() > scenario.as_of:
+                if utc(evidence.timing.available_at) > scenario.as_of:
                     raise ScenarioValidationError("FACT_NOT_KNOWN_AS_OF", evidence.event_id)
         policy = lifecycle.payment_policy
         if policy is not None:
@@ -624,7 +625,7 @@ def _validate_scenario_identities(scenario: HKDividendScenarioInput) -> None:
     evidence_ids.extend(item.evidence_id for item in scenario.same_instant_order)
     if len(evidence_ids) != len(set(evidence_ids)):
         raise ScenarioValidationError("DUPLICATE_EVENT_ID", "scenario evidence IDs must be global")
-    if any(utc(rate.available_at).to_pydatetime() > scenario.as_of for rate in scenario.pit_fx):
+    if any(utc(rate.available_at) > scenario.as_of for rate in scenario.pit_fx):
         raise ScenarioValidationError("FACT_NOT_KNOWN_AS_OF", "PIT FX after as_of")
     status_dividends = [item.dividend_id for item in scenario.payment_status]
     if len(status_dividends) != len(set(status_dividends)):
@@ -899,7 +900,7 @@ def build_scenario_timeline(
     events.extend(
         TimelineEvent(
             event_id=rate.event_id,
-            event_time=utc(rate.available_at).to_pydatetime(),
+            event_time=utc(rate.available_at),
             kind="pit_fx",
             source_identity=rate.evidence_id,
             payload=rate,
